@@ -6,9 +6,19 @@
   <title>Minions Demo 2</title>
   <style>
     :root {
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      color: #fefefe;
-      background-color: #050a1a;
+      --bg: #050d1f;
+      --panel: #0b1531;
+      --line: #7f95ff;
+      --panel-border: #6b82fb;
+      --text: #f2f7ff;
+      --muted: #a6bcff;
+      --accent: #9cf2ff;
+      --cell: rgba(255, 255, 255, 0.07);
+      --head: #f6df6a;
+      --body: #4f9cf4;
+      font-family: 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at 50% 0, #0f1e43, #050d1f 55%, #040914 100%);
     }
 
     body {
@@ -29,112 +39,69 @@
     h1 {
       margin: 0;
       font-size: 2rem;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.05em;
     }
 
     p {
       margin: 0.25rem 0 0;
-      color: #a0b3ff;
+      color: var(--muted);
     }
 
     main {
-      width: min(600px, 100%);
+      width: min(680px, 100%);
       display: flex;
       flex-direction: column;
       gap: 1rem;
+      align-items: center;
     }
 
     #game-frame {
       position: relative;
-      background: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.5));
-      border: 2px solid #6478ff;
+      width: min(640px, min(92vw, 94vh));
+      aspect-ratio: 1 / 1;
+      background: linear-gradient(150deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.6));
+      border: 2px solid var(--panel-border);
       border-radius: 0.75rem;
-      padding: 1rem;
-      min-height: 360px;
       overflow: hidden;
+      box-shadow: 0 20px 30px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+      touch-action: none;
     }
 
-    #target {
+    #game-frame::before {
+      content: '';
       position: absolute;
-      width: 48px;
-      height: 48px;
-      border-radius: 50%;
-      background: radial-gradient(circle, #ffe100, #ffb347);
-      box-shadow: 0 0 12px 3px rgba(255, 177, 71, 0.8);
-      cursor: pointer;
+      inset: 0.65rem;
+      border: 1px dashed rgba(255, 255, 255, 0.15);
+      border-radius: 0.55rem;
+      pointer-events: none;
     }
 
-    .item {
+    #boardCanvas {
       position: absolute;
-      width: 36px;
-      height: 36px;
-      border-radius: 50%;
-      border: 2px solid rgba(255, 255, 255, 0.45);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.2rem;
+      inset: 0;
+      width: 100%;
+      height: 100%;
       cursor: pointer;
-      user-select: none;
-      box-shadow: 0 0 10px rgba(0, 0, 0, 0.32);
-    }
-
-    .item-banana {
-      background: radial-gradient(circle, #ffe066, #f2b33f);
-    }
-
-    .item-avocado {
-      background: radial-gradient(circle, #8ee48e, #2d9952);
-    }
-
-    .item-explosive {
-      background: radial-gradient(circle, #ff8e8e, #b82c2c);
-      color: #fff8;
-      font-weight: 700;
     }
 
     .hud {
+      color: var(--text);
+    }
+
+    .hud-row {
       display: flex;
       justify-content: space-between;
-      font-size: 1.1rem;
-      color: #fefefe;
+      font-size: 1.2rem;
+      color: var(--text);
       border-bottom: 1px solid rgba(255, 255, 255, 0.15);
       padding-bottom: 0.25rem;
-      gap: 0.75rem;
-      flex-wrap: wrap;
     }
 
     .controls {
       display: flex;
       gap: 0.75rem;
       flex-wrap: wrap;
-      align-items: center;
-    }
-
-    .seed-row {
-      display: flex;
-      gap: 0.5rem;
-      align-items: center;
-      min-width: 100%;
-    }
-
-    .seed-row label {
-      font-size: 0.9rem;
-      color: #bdd0ff;
-      white-space: nowrap;
-    }
-
-    .seed-row input {
-      width: 9rem;
-      padding: 0.45rem 0.55rem;
-      border: none;
-      border-radius: 0.4rem;
-    }
-
-    .seed-row .seed-value {
-      color: #c4d8ff;
-      font-size: 0.85rem;
-      white-space: nowrap;
     }
 
     button {
@@ -145,8 +112,9 @@
       border: none;
       border-radius: 0.5rem;
       font-weight: 600;
-      background: #6478ff;
-      color: #fff;
+      background: linear-gradient(180deg, #7a90ff, #6478ff);
+      color: var(--text);
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2) inset;
       transition: transform 0.1s ease, box-shadow 0.2s ease;
     }
 
@@ -163,52 +131,35 @@
     footer {
       margin-top: 2rem;
       text-align: center;
-      color: #7ea7ff;
+      color: #9aafff;
       font-size: 0.9rem;
-    }
-
-    @media (max-width: 520px) {
-      .seed-row {
-        flex-wrap: wrap;
-      }
-
-      .seed-row input {
-        width: 100%;
-      }
-
-      .seed-row button {
-        min-width: unset;
-      }
     }
   </style>
 </head>
 <body>
   <header>
     <h1>Minions Demo 2</h1>
-    <p>Frontend-only prototype: tap targets and collect deterministic items.</p>
+    <p>Frontend-only board demo: move with arrows/WASD or tap a nearby cell.</p>
   </header>
   <main>
     <div id="game-frame">
-      <div id="target" aria-label="game target" role="button"></div>
+      <canvas id="boardCanvas"></canvas>
     </div>
 
     <div class="hud">
+      <p id="hint" style="margin: 0 0 0.45rem; color: var(--muted)">
+        Press Start to enter the deterministic snake-style loop.
+      </p>
+      <div class="hud-row">
       <span>Score: <strong id="score">0</strong></span>
-      <span>Items: <strong id="item-count">0</strong></span>
       <span>Time: <strong id="timer">0.0</strong>s</span>
+      </div>
     </div>
 
     <div class="controls">
       <button id="start">Start</button>
       <button id="pause" disabled>Pause</button>
       <button id="reset" disabled>Reset</button>
-    </div>
-
-    <div class="seed-row">
-      <label for="seed-input">Deterministic seed:</label>
-      <input id="seed-input" type="text" placeholder="random" />
-      <button id="apply-seed">Apply Seed</button>
-      <span class="seed-value">Active: <strong id="seed-display">n/a</strong></span>
     </div>
   </main>
   <footer>
@@ -217,413 +168,587 @@
   <script>
     (function () {
       const frame = document.getElementById('game-frame');
-      const target = document.getElementById('target');
+      const hint = document.getElementById('hint');
+      const canvas = document.getElementById('boardCanvas');
+      const ctx = canvas.getContext('2d');
       const startBtn = document.getElementById('start');
       const pauseBtn = document.getElementById('pause');
       const resetBtn = document.getElementById('reset');
       const scoreEl = document.getElementById('score');
       const timerEl = document.getElementById('timer');
-      const itemCountEl = document.getElementById('item-count');
-      const seedInput = document.getElementById('seed-input');
-      const seedApplyButton = document.getElementById('apply-seed');
-      const seedDisplay = document.getElementById('seed-display');
 
-      const ITEM_TYPES = {
-        banana: {
-          points: 5,
-          symbol: '🍌',
-          className: 'item-banana',
-        },
-        avocado: {
-          points: 10,
-          symbol: '🥑',
-          className: 'item-avocado',
-        },
-        explosive: {
-          points: 25,
-          symbol: '💥',
-          className: 'item-explosive',
-          radius: 1,
-        },
+      const board = { cols: 12, rows: 12 };
+      const tickMs = 240;
+      const growthPerItem = 1;
+      const lcgMultiplier = 1664525;
+      const lcgIncrement = 1013904223;
+      const initialSeed = 0xdecafbad >>> 0;
+      const initialDirection = 'right';
+
+      const directions = {
+        up: { dx: 0, dy: -1 },
+        down: { dx: 0, dy: 1 },
+        left: { dx: -1, dy: 0 },
+        right: { dx: 1, dy: 0 }
       };
 
-      const BOARD_COLUMNS = 8;
-      const BOARD_ROWS = 7;
-      const CELL_PADDING = 14;
-      const TARGET_SIZE = 46;
-      const ITEM_SIZE = 34;
-      const SPAWN_INTERVAL_MS = 900;
-      const MAX_ITEMS = 12;
-      const SPAWN_CHANCE = 0.72;
+      const keyToDirection = {
+        ArrowUp: 'up',
+        ArrowDown: 'down',
+        ArrowLeft: 'left',
+        ArrowRight: 'right',
+        w: 'up',
+        W: 'up',
+        s: 'down',
+        S: 'down',
+        a: 'left',
+        A: 'left',
+        d: 'right',
+        D: 'right'
+      };
 
-      const typeChances = [
-        { type: 'banana', chance: 0.6 },
-        { type: 'avocado', chance: 0.35 },
-        { type: 'explosive', chance: 0.05 },
-      ];
+      const state = {
+        status: 'idle',
+        score: 0,
+        timerMs: 0,
+        frameAccumulator: 0,
+        tickAccumulator: 0,
+        direction: initialDirection,
+        queuedDirection: initialDirection,
+        snake: [],
+        growthQueued: 0,
+        seed: initialSeed,
+        item: null,
+        phase: 0,
+        lastFrameTs: 0
+      };
 
-      let score = 0;
-      let running = false;
-      let timer = 0;
-      let tickId = null;
-      let spawnId = null;
-      let resizeTimer = null;
-      let rngState = 0;
+      let layout = null;
 
-      let targetCell = null;
-      const itemsByCell = new Map();
-
-      function normalizeSeed(value) {
-        const text = String(value).trim();
-        const asNumber = Number.parseInt(text, 10);
-        if (!Number.isNaN(asNumber) && Number.isFinite(asNumber)) {
-          return asNumber >>> 0;
-        }
-
-        let hash = 2166136261;
-        for (let i = 0; i < text.length; i += 1) {
-          hash ^= text.charCodeAt(i);
-          hash = Math.imul(hash, 16777619);
-        }
-        return hash >>> 0;
+      function stepRng(seed) {
+        return (Math.imul(seed, lcgMultiplier) + lcgIncrement) >>> 0;
       }
 
-      function hashSeedFromUrl() {
-        const query = new URLSearchParams(window.location.search);
-        const urlSeed = query.get('seed');
-        if (urlSeed == null || urlSeed.trim().length === 0) {
-          return '';
-        }
-        return urlSeed;
+      function keyFromCell(col, row) {
+        return `${col}:${row}`;
       }
 
-      function makeRng(seedValue) {
-        let state = normalizeSeed(seedValue);
-        if (state === 0) {
-          state = 0x9E3779B9;
+      function nextDirectionFromInput(current, requested) {
+        if (!requested || requested === current) return current;
+
+        const a = directions[current];
+        const b = directions[requested];
+        const isReverse = a.dx === -b.dx && a.dy === -b.dy;
+        if (isReverse) return current;
+
+        return requested;
+      }
+
+      function occupiedBySnake(snake) {
+        const blocked = new Set();
+        for (const segment of snake) {
+          blocked.add(keyFromCell(segment.col, segment.row));
+        }
+        return blocked;
+      }
+
+      function pickSpawn(seed, blockedCells) {
+        const totalCells = board.cols * board.rows;
+        let nextSeed = seed;
+        let spawn = null;
+
+        if (blockedCells.size >= totalCells) {
+          return { item: null, nextSeed };
         }
 
-        return {
-          next() {
-            state = (Math.imul(1664525, state) + 1013904223) >>> 0;
-            return state / 4294967296;
-          },
-          getState() {
-            return state;
-          },
+        for (let attempts = 0; attempts < totalCells * 4; attempts += 1) {
+          nextSeed = stepRng(nextSeed);
+          const col = nextSeed % board.cols;
+          nextSeed = stepRng(nextSeed);
+          const row = nextSeed % board.rows;
+          const candidate = keyFromCell(col, row);
+          if (!blockedCells.has(candidate)) {
+            spawn = { col, row };
+            break;
+          }
+        }
+
+        if (!spawn) {
+          // Deterministic fallback scan when pseudo-random path is exhausted.
+          for (let row = 0; row < board.rows; row += 1) {
+            for (let col = 0; col < board.cols; col += 1) {
+              const candidate = keyFromCell(col, row);
+              if (!blockedCells.has(candidate)) {
+                spawn = { col, row };
+                break;
+              }
+            }
+            if (spawn) break;
+          }
+        }
+
+        return { item: spawn, nextSeed };
+      }
+
+      function isSameCell(a, b) {
+        return a.col === b.col && a.row === b.row;
+      }
+
+      function resetState() {
+        state.status = 'idle';
+        state.score = 0;
+        state.timerMs = 0;
+        state.frameAccumulator = 0;
+        state.tickAccumulator = 0;
+        state.direction = initialDirection;
+        state.queuedDirection = initialDirection;
+        state.growthQueued = 0;
+        state.seed = initialSeed;
+        state.phase = 0;
+        state.lastFrameTs = 0;
+
+        state.snake = [
+          { col: 5, row: 5 },
+          { col: 4, row: 5 },
+          { col: 3, row: 5 }
+        ];
+
+        const blocked = occupiedBySnake(state.snake);
+        const spawn = pickSpawn(state.seed, blocked);
+        state.item = spawn.item;
+        state.seed = spawn.nextSeed;
+
+        startBtn.disabled = false;
+        pauseBtn.disabled = true;
+        resetBtn.disabled = false;
+        updateHud();
+        drawBoard();
+      }
+
+      function pauseButtonsAfterEnd() {
+        pauseBtn.disabled = true;
+        startBtn.disabled = true;
+      }
+
+      function setDirection(intent) {
+        if (!intent || !directions[intent]) return;
+        if (state.status === 'gameOver' || state.status === 'won') return;
+        state.queuedDirection = intent;
+      }
+
+      function step() {
+        if (state.status !== 'running') return;
+
+        state.direction = nextDirectionFromInput(state.direction, state.queuedDirection);
+        const move = directions[state.direction];
+        const head = state.snake[0];
+        const nextHead = {
+          col: head.col + move.dx,
+          row: head.row + move.dy
         };
+
+        const hitWall =
+          nextHead.col < 0 ||
+          nextHead.row < 0 ||
+          nextHead.col >= board.cols ||
+          nextHead.row >= board.rows;
+
+        const bodyForSelfCollision =
+          state.growthQueued > 0 ? state.snake : state.snake.slice(0, -1);
+
+        const hitSelf = bodyForSelfCollision.some((segment) => isSameCell(segment, nextHead));
+
+        if (hitWall || hitSelf) {
+          state.status = 'gameOver';
+          pauseButtonsAfterEnd();
+          return;
+        }
+
+        state.snake.unshift(nextHead);
+
+        let growthQueued = state.growthQueued;
+        const didPickup = state.item && isSameCell(nextHead, state.item);
+
+        if (didPickup) {
+          growthQueued += growthPerItem;
+          state.score += 1;
+
+          const blocked = occupiedBySnake(state.snake);
+          const spawn = pickSpawn(state.seed, blocked);
+          state.item = spawn.item;
+          state.seed = spawn.nextSeed;
+
+          if (!state.item) {
+            state.status = 'won';
+            pauseButtonsAfterEnd();
+          }
+        }
+
+        if (growthQueued > 0) {
+          growthQueued -= 1;
+        } else {
+          state.snake.pop();
+        }
+
+        state.growthQueued = growthQueued;
+        state.queuedDirection = state.direction;
       }
 
-      let rng = null;
+      function measureLayout() {
+        const { width, height } = frame.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
 
-      function currentRng() {
-        return rng.next();
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        const inset = 24;
+        const boardPx = Math.max(1, Math.min(width, height) - inset * 2);
+        const rawCell = Math.floor(boardPx / Math.max(board.cols, board.rows));
+        const cellSize = Math.max(8, rawCell);
+        const boardWidth = cellSize * board.cols;
+        const boardHeight = cellSize * board.rows;
+
+        layout = {
+          width,
+          height,
+          cellSize,
+          boardWidth,
+          boardHeight,
+          x: Math.round((width - boardWidth) / 2),
+          y: Math.round((height - boardHeight) / 2)
+        };
+
+        drawBoard();
       }
 
-      function setSeed(seedText) {
-        rng = makeRng(seedText);
-        seedDisplay.textContent = rng.getState();
+      function drawCellGrid() {
+        const { x, y, cellSize } = layout;
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+        ctx.lineWidth = 1;
+
+        for (let col = 0; col <= board.cols; col++) {
+          const px = x + col * cellSize;
+          ctx.beginPath();
+          ctx.moveTo(px, y);
+          ctx.lineTo(px, y + board.rows * cellSize);
+          ctx.stroke();
+        }
+
+        for (let row = 0; row <= board.rows; row++) {
+          const py = y + row * cellSize;
+          ctx.beginPath();
+          ctx.moveTo(x, py);
+          ctx.lineTo(x + board.cols * cellSize, py);
+          ctx.stroke();
+        }
+
+        for (let row = 0; row < board.rows; row++) {
+          for (let col = 0; col < board.cols; col++) {
+            if ((row + col) % 2 === 0) {
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+            } else {
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+            }
+            ctx.fillRect(
+              x + col * cellSize,
+              y + row * cellSize,
+              cellSize,
+              cellSize
+            );
+          }
+        }
       }
 
-      function keyOf(cell) {
-        return `${cell.col},${cell.row}`;
+      function roundRect(x, y, width, height, radius) {
+        const r = Math.min(radius, width / 2, height / 2);
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + width, y, x + width, y + height, r);
+        ctx.arcTo(x + width, y + height, x, y + height, r);
+        ctx.arcTo(x, y + height, x, y, r);
+        ctx.arcTo(x, y, x + width, y, r);
       }
 
-      function parseKey(key) {
-        const [col, row] = key.split(',').map((value) => Number.parseInt(value, 10));
+      function drawMinionSegment(col, row, phase, isHead) {
+        const { x, y, cellSize } = layout;
+        const baseX = x + (col + 0.5) * cellSize;
+        const baseY = y + (row + 0.5) * cellSize;
+        const jitter = Math.sin(phase) * (cellSize * 0.06);
+
+        if (isHead) {
+          const bodyWidth = cellSize * 0.46;
+          const bodyHeight = cellSize * 0.54;
+          const bodyX = baseX - bodyWidth / 2;
+          const bodyY = baseY - 0.05 * cellSize + jitter;
+          const bodyRadius = bodyWidth * 0.3;
+          const bodyBottom = bodyY + bodyHeight;
+
+          ctx.fillStyle = 'var(--body)';
+          ctx.beginPath();
+          roundRect(bodyX, bodyY, bodyWidth, bodyHeight, bodyRadius);
+          ctx.fill();
+
+          const headRadius = cellSize * 0.29;
+          const headX = baseX;
+          const headY = baseY - cellSize * 0.22 + jitter * 0.35;
+          ctx.fillStyle = 'var(--head)';
+          ctx.beginPath();
+          ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = '#d4ad2c';
+          ctx.lineWidth = Math.max(2, cellSize * 0.05);
+          ctx.beginPath();
+          ctx.arc(headX, headY, headRadius - 1, -Math.PI * 0.75, Math.PI * 0.75);
+          ctx.stroke();
+
+          const eyeGap = cellSize * 0.09;
+          const eyeY = headY - cellSize * 0.05;
+          const eyeRadius = cellSize * 0.045;
+          ctx.fillStyle = '#1a2233';
+          ctx.beginPath();
+          ctx.arc(headX - eyeGap, eyeY, eyeRadius, 0, Math.PI * 2);
+          ctx.arc(headX + eyeGap, eyeY, eyeRadius, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = '#cce5ff';
+          ctx.lineWidth = Math.max(2, cellSize * 0.035);
+          ctx.beginPath();
+          ctx.moveTo(baseX - bodyWidth / 2, baseY + jitter * 0.2);
+          ctx.lineTo(baseX + bodyWidth / 2, baseY + jitter * 0.2);
+          ctx.stroke();
+
+          const footY = bodyBottom + cellSize * 0.11;
+          const footW = bodyWidth * 0.25;
+          const footH = cellSize * 0.06;
+          ctx.fillStyle = '#e2be5a';
+          ctx.fillRect(baseX - bodyWidth * 0.26, footY, footW, footH);
+          ctx.fillRect(baseX + bodyWidth * 0.01, footY, footW, footH);
+          return;
+        }
+
+        const radius = cellSize * 0.24;
+        ctx.fillStyle = 'rgba(80, 160, 244, 0.94)';
+        ctx.beginPath();
+        ctx.arc(baseX, baseY + jitter * 0.4, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawItem() {
+        if (!state.item) return;
+
+        const { x, y, cellSize } = layout;
+        const cx = x + (state.item.col + 0.5) * cellSize;
+        const cy = y + (state.item.row + 0.5) * cellSize;
+        const pulse = (Math.sin(state.phase * 1.8) + 1) / 2;
+        const wobble = cellSize * 0.08 * pulse;
+
+        ctx.fillStyle = '#ffd86b';
+        ctx.beginPath();
+        ctx.arc(cx, cy, cellSize * 0.18 + wobble, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#f6df6a';
+        ctx.beginPath();
+        ctx.arc(cx, cy, cellSize * 0.1 + wobble * 0.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawMinion() {
+        const phase = state.phase;
+        for (let index = state.snake.length - 1; index >= 0; index--) {
+          const segment = state.snake[index];
+          drawMinionSegment(segment.col, segment.row, phase + index * 0.08, index === 0);
+        }
+        drawItem();
+      }
+
+      function drawBoard() {
+        if (!layout) return;
+
+        ctx.clearRect(0, 0, layout.width, layout.height);
+        ctx.fillStyle = 'rgba(3, 7, 25, 0.95)';
+        ctx.fillRect(0, 0, layout.width, layout.height);
+
+        const { x, y, boardWidth, boardHeight } = layout;
+        const border = 'rgba(255, 255, 255, 0.18)';
+
+        ctx.fillStyle = 'var(--panel)';
+        ctx.fillRect(x - 3, y - 3, boardWidth + 6, boardHeight + 6);
+        ctx.fillStyle = 'rgba(3, 11, 33, 0.95)';
+        ctx.fillRect(x, y, boardWidth, boardHeight);
+        ctx.strokeStyle = border;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, boardWidth, boardHeight);
+
+        drawCellGrid();
+        drawMinion();
+      }
+
+      function updateHud() {
+        scoreEl.textContent = String(state.score);
+        timerEl.textContent = (state.timerMs / 1000).toFixed(1);
+
+        if (state.status === 'gameOver') {
+          hint.textContent = 'Game over. Press Reset to start again.';
+          return;
+        }
+
+        if (state.status === 'won') {
+          hint.textContent = 'You won. Reset for a new round.';
+          return;
+        }
+
+        if (state.status === 'running') {
+          hint.textContent = 'Use arrow keys/WASD or tap a nearby cell to steer.';
+          return;
+        }
+
+        hint.textContent = 'Press Start to begin. Growth queue: ' + state.growthQueued;
+      }
+
+      function cellFromPointer(event) {
+        if (!layout) return null;
+
+        const rect = canvas.getBoundingClientRect();
+        const px = event.clientX - rect.left;
+        const py = event.clientY - rect.top;
+
+        if (px < layout.x || py < layout.y) return null;
+
+        const col = Math.floor((px - layout.x) / layout.cellSize);
+        const row = Math.floor((py - layout.y) / layout.cellSize);
+
+        if (col < 0 || col >= board.cols || row < 0 || row >= board.rows) {
+          return null;
+        }
+
         return { col, row };
       }
 
-      function isCellOccupied(cell) {
-        const key = keyOf(cell);
-        if (targetCell && keyOf(targetCell) === key) {
-          return true;
-        }
-        return itemsByCell.has(key);
-      }
+      function handleDirectionFromPointer(event) {
+        if (state.status !== 'running') return;
 
-      function isEmptyCell(cell) {
-        return !isCellOccupied(cell);
-      }
+        const head = state.snake[0];
+        const target = cellFromPointer(event);
+        if (!target || !head) return;
 
-      function getEmptyCells() {
-        const empties = [];
-        for (let row = 0; row < BOARD_ROWS; row += 1) {
-          for (let col = 0; col < BOARD_COLUMNS; col += 1) {
-            const cell = { col, row };
-            if (isEmptyCell(cell)) {
-              empties.push(cell);
-            }
-          }
-        }
-        return empties;
-      }
+        const deltaCol = target.col - head.col;
+        const deltaRow = target.row - head.row;
 
-      function randomEmptyCell() {
-        const empties = getEmptyCells();
-        if (empties.length === 0) {
-          return null;
-        }
-        const index = Math.floor(currentRng() * empties.length);
-        return empties[index];
-      }
+        if (deltaCol === 0 && deltaRow === 0) return;
 
-      function pickType() {
-        const roll = currentRng();
-        let cumulative = 0;
-        for (let i = 0; i < typeChances.length; i += 1) {
-          const entry = typeChances[i];
-          cumulative += entry.chance;
-          if (roll < cumulative) {
-            return entry.type;
-          }
-        }
-        return 'banana';
-      }
-
-      function cellGeometry() {
-        const bounds = frame.getBoundingClientRect();
-        const width = Math.max(0, bounds.width - CELL_PADDING * 2);
-        const height = Math.max(0, bounds.height - CELL_PADDING * 2);
-
-        const colSize = width / BOARD_COLUMNS;
-        const rowSize = height / BOARD_ROWS;
-
-        return { colSize, rowSize, width, height };
-      }
-
-      function placeElementAtCell(element, cell, size) {
-        const { colSize, rowSize } = cellGeometry();
-        const left = CELL_PADDING + cell.col * colSize + (colSize - size) / 2;
-        const top = CELL_PADDING + cell.row * rowSize + (rowSize - size) / 2;
-
-        element.style.left = `${left}px`;
-        element.style.top = `${top}px`;
-      }
-
-      function placeTarget(cell = null) {
-        if (cell === null) {
-          cell = randomEmptyCell();
-        }
-        if (cell === null) {
-          return;
-        }
-        targetCell = cell;
-        target.dataset.cell = keyOf(cell);
-        target.dataset.col = String(cell.col);
-        target.dataset.row = String(cell.row);
-        placeElementAtCell(target, cell, TARGET_SIZE);
-      }
-
-      function updateScoreDisplay() {
-        scoreEl.textContent = score;
-        itemCountEl.textContent = itemsByCell.size;
-      }
-
-      function removeItem(key) {
-        const item = itemsByCell.get(key);
-        if (!item) {
-          return false;
-        }
-        item.remove();
-        itemsByCell.delete(key);
-        updateScoreDisplay();
-        return true;
-      }
-
-      function spawnItem() {
-        if (!running) {
-          return;
-        }
-
-        if (itemsByCell.size >= MAX_ITEMS) {
-          return;
-        }
-
-        if (currentRng() >= SPAWN_CHANCE) {
-          return;
-        }
-
-        const cell = randomEmptyCell();
-        if (cell === null) {
-          return;
-        }
-
-        const type = pickType();
-        const config = ITEM_TYPES[type];
-        const element = document.createElement('div');
-        const key = keyOf(cell);
-        element.className = `item ${config.className}`;
-        element.classList.add('item');
-        element.dataset.type = type;
-        element.dataset.cell = key;
-        element.dataset.col = String(cell.col);
-        element.dataset.row = String(cell.row);
-        element.textContent = config.symbol;
-
-        placeElementAtCell(element, cell, ITEM_SIZE);
-        itemsByCell.set(key, element);
-        frame.appendChild(element);
-
-        updateScoreDisplay();
-      }
-
-      function explosionKeys(cell) {
-        const affected = [];
-        const radius = ITEM_TYPES.explosive.radius;
-
-        for (const key of itemsByCell.keys()) {
-          const candidate = parseKey(key);
-          const dCol = Math.abs(candidate.col - cell.col);
-          const dRow = Math.abs(candidate.row - cell.row);
-          if (dCol <= radius && dRow <= radius) {
-            affected.push(key);
-          }
-        }
-
-        return affected;
-      }
-
-      function collectItem(key) {
-        const item = itemsByCell.get(key);
-        if (!item || !running) {
-          return;
-        }
-
-        const type = item.dataset.type;
-        const config = ITEM_TYPES[type];
-        score += config.points;
-
-        if (type === 'explosive') {
-          const cell = parseKey(key);
-          const toRemove = explosionKeys(cell);
-          toRemove.forEach((removeKey) => {
-            removeItem(removeKey);
-          });
+        if (Math.abs(deltaCol) >= Math.abs(deltaRow)) {
+          setDirection(deltaCol > 0 ? 'right' : 'left');
         } else {
-          removeItem(key);
+          setDirection(deltaRow > 0 ? 'down' : 'up');
+        }
+      }
+
+      function handleKeydown(event) {
+        const requested = keyToDirection[event.key];
+        if (requested) {
+          event.preventDefault();
+          setDirection(requested);
+          return;
         }
 
-        updateScoreDisplay();
-        placeTarget();
-      }
-
-      function updateTimer() {
-        timer += 0.1;
-        timerEl.textContent = timer.toFixed(1);
-      }
-
-      function clearItems() {
-        itemsByCell.forEach((item) => item.remove());
-        itemsByCell.clear();
-      }
-
-      function resetTarget() {
-        target.style.left = '-100px';
-        target.style.top = '-100px';
-        target.dataset.cell = '';
-        target.dataset.col = '';
-        target.dataset.row = '';
-        targetCell = null;
-      }
-
-      function repositionAll() {
-        if (targetCell) {
-          placeElementAtCell(target, targetCell, TARGET_SIZE);
+        if (event.key === ' ' || event.key === 'Enter') {
+          event.preventDefault();
+          if (state.status === 'running') {
+            pauseGame();
+            return;
+          }
+          if (state.status === 'paused') {
+            resumeGame();
+          }
         }
-        itemsByCell.forEach((item, key) => {
-          const cell = parseKey(key);
-          placeElementAtCell(item, cell, ITEM_SIZE);
-        });
       }
 
       function startGame() {
-        if (running) return;
-        running = true;
+        if (state.status === 'running' || state.status === 'gameOver' || state.status === 'won') return;
+        state.status = 'running';
         startBtn.disabled = true;
         pauseBtn.disabled = false;
         resetBtn.disabled = false;
-
-        tickId = setInterval(updateTimer, 100);
-        spawnId = setInterval(spawnItem, SPAWN_INTERVAL_MS);
-
-        if (!targetCell) {
-          placeTarget();
-        }
+        updateHud();
       }
 
       function pauseGame() {
-        running = false;
+        if (state.status !== 'running') return;
+        state.status = 'paused';
         startBtn.disabled = false;
         pauseBtn.disabled = true;
-        clearInterval(tickId);
-        clearInterval(spawnId);
+        updateHud();
+      }
+
+      function resumeGame() {
+        if (state.status !== 'paused') return;
+        state.status = 'running';
+        startBtn.disabled = true;
+        pauseBtn.disabled = false;
+        updateHud();
       }
 
       function resetGame() {
-        running = false;
-        startBtn.disabled = false;
-        pauseBtn.disabled = true;
-        resetBtn.disabled = true;
-        clearInterval(tickId);
-        clearInterval(spawnId);
-
-        timer = 0;
-        score = 0;
-        tickId = null;
-        spawnId = null;
-        timerEl.textContent = '0.0';
-        updateScoreDisplay();
-        clearItems();
-        resetTarget();
+        resetState();
       }
 
-      startBtn.addEventListener('click', startGame);
+      function loop(ts) {
+        if (!state.lastFrameTs) state.lastFrameTs = ts;
+        const deltaMs = ts - state.lastFrameTs;
+        state.lastFrameTs = ts;
+
+        state.phase += (deltaMs / 1000) * 8;
+
+        if (state.status === 'running' || state.status === 'paused') {
+          state.frameAccumulator += deltaMs;
+        }
+
+        if (state.status === 'running') {
+          state.timerMs += deltaMs;
+          state.tickAccumulator += deltaMs;
+
+          while (state.tickAccumulator >= tickMs && state.status === 'running') {
+            state.tickAccumulator -= tickMs;
+            step();
+          }
+
+          drawBoard();
+          updateHud();
+        }
+
+        if (state.status === 'idle') {
+          drawBoard();
+          updateHud();
+        }
+
+        if (state.status === 'paused' || state.status === 'gameOver' || state.status === 'won') {
+          drawBoard();
+          updateHud();
+        }
+
+        requestAnimationFrame(loop);
+      }
+
+      canvas.addEventListener('pointerdown', handleDirectionFromPointer);
+      window.addEventListener('keydown', handleKeydown);
+      window.addEventListener('resize', measureLayout);
+      startBtn.addEventListener('click', () => {
+        if (state.status === 'paused') {
+          resumeGame();
+          return;
+        }
+        startGame();
+      });
       pauseBtn.addEventListener('click', pauseGame);
       resetBtn.addEventListener('click', resetGame);
 
-      target.addEventListener('click', () => {
-        if (!running) return;
-        score += 10;
-        updateScoreDisplay();
-        placeTarget();
-      });
-
-      frame.addEventListener('click', (event) => {
-        const item = event.target.closest('.item');
-        if (!item || !running) return;
-        collectItem(item.dataset.cell);
-      });
-
-      seedApplyButton.addEventListener('click', () => {
-        setSeed(seedInput.value || String(Date.now()));
-      });
-
-      window.addEventListener('resize', () => {
-        clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => {
-          repositionAll();
-        }, 100);
-      });
-
-      setSeed(seedInput.value || hashSeedFromUrl() || String(Date.now()));
-      if (hashSeedFromUrl()) {
-        seedInput.value = hashSeedFromUrl();
-      }
-
-      window.__minionsDemo = {
-        applySeed(seed) {
-          setSeed(seed);
-        },
-        tickSpawn() {
-          spawnItem();
-        },
-        clearAll() {
-          resetGame();
-        },
-      };
-
-      resetGame();
+      resetState();
+      measureLayout();
+      requestAnimationFrame(loop);
     })();
   </script>
 </body>
