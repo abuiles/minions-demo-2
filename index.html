@@ -152,6 +152,7 @@
       </p>
       <div class="hud-row">
       <span>Score: <strong id="score">0</strong></span>
+      <span>High Score: <strong id="highScore">0</strong></span>
       <span>Time: <strong id="timer">0.0</strong>s</span>
       </div>
     </div>
@@ -175,6 +176,7 @@
       const pauseBtn = document.getElementById('pause');
       const resetBtn = document.getElementById('reset');
       const scoreEl = document.getElementById('score');
+      const highScoreEl = document.getElementById('highScore');
       const timerEl = document.getElementById('timer');
 
       const board = { cols: 12, rows: 12 };
@@ -184,6 +186,111 @@
       const lcgIncrement = 1013904223;
       const initialSeed = 0xdecafbad >>> 0;
       const initialDirection = 'right';
+      const storageKey = 'minions-demo-2-state-v1';
+      const defaultPersistence = {
+        highScore: 0,
+        lastRunSummary: null
+      };
+
+      const persistedProgress = loadPersistedProgress();
+
+      function isObject(value) {
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
+      }
+
+      function safeInteger(value, fallback) {
+        const num = Number(value);
+        return Number.isSafeInteger(num) ? num : fallback;
+      }
+
+      function safeUnsigned(value, fallback) {
+        const num = safeInteger(value, fallback);
+        return typeof num === 'number' && num >= 0 ? num : fallback;
+      }
+
+      function sanitizeDirection(value) {
+        if (!value) return null;
+        const key = String(value);
+        return directions[key] ? key : directions[key.toLowerCase()] ? key.toLowerCase() : null;
+      }
+
+      function sanitizeSummary(value) {
+        if (!isObject(value)) return null;
+        const summary = {
+          version: 1,
+          timestamp: safeUnsigned(value.timestamp, Date.now()),
+          context: typeof value.context === 'string' ? value.context : 'unknown',
+          status: typeof value.status === 'string' ? value.status : 'unknown',
+          score: safeUnsigned(value.score, 0),
+          durationMs: safeUnsigned(value.durationMs, 0),
+          ticks: safeUnsigned(value.ticks, 0),
+          seed: safeUnsigned(value.seed, initialSeed),
+          maxTicks: value.maxTicks === undefined ? null : safeUnsigned(value.maxTicks, 0),
+          scenario: value.scenario || null,
+          snakeLength: safeUnsigned(value.snakeLength, 0),
+          head: value.head && Number.isInteger(value.head.col) && Number.isInteger(value.head.row)
+            ? { col: value.head.col, row: value.head.row }
+            : null,
+          item: value.item && Number.isInteger(value.item.col) && Number.isInteger(value.item.row)
+            ? { col: value.item.col, row: value.item.row }
+            : null,
+          movesApplied: safeUnsigned(value.movesApplied, 0),
+          endedBy: typeof value.endedBy === 'string' ? value.endedBy : null
+        };
+        return summary;
+      }
+
+      function loadPersistedProgress() {
+        try {
+          if (!window.localStorage) {
+            return { ...defaultPersistence };
+          }
+
+          const raw = localStorage.getItem(storageKey);
+          if (!raw) {
+            return { ...defaultPersistence };
+          }
+
+          const parsed = JSON.parse(raw);
+          if (!isObject(parsed)) {
+            return { ...defaultPersistence };
+          }
+
+          const loaded = {
+            highScore: safeUnsigned(parsed.highScore, defaultPersistence.highScore),
+            lastRunSummary: sanitizeSummary(parsed.lastRunSummary)
+          };
+          return loaded;
+        } catch (_error) {
+          return { ...defaultPersistence };
+        }
+      }
+
+      function persistProgress(nextState) {
+        try {
+          if (!window.localStorage) {
+            return;
+          }
+
+          localStorage.setItem(storageKey, JSON.stringify(nextState));
+        } catch (_error) {
+          return;
+        }
+      }
+
+      function clampDirection(value) {
+        return sanitizeDirection(value) || initialDirection;
+      }
+
+      function seedFromInput(value, fallback) {
+        return safeUnsigned(value, fallback) >>> 0;
+      }
+
+      function clampCell(value, max) {
+        return Math.min(max - 1, Math.max(0, safeUnsigned(value, 0)));
+      }
+
+      let highScore = safeUnsigned(persistedProgress.highScore, 0);
 
       const directions = {
         up: { dx: 0, dy: -1 },
@@ -192,7 +299,7 @@
         right: { dx: 1, dy: 0 }
       };
 
-      const keyToDirection = {
+      const directionAliases = {
         ArrowUp: 'up',
         ArrowDown: 'down',
         ArrowLeft: 'left',
@@ -207,10 +314,38 @@
         D: 'right'
       };
 
+      function normalizeDirection(value) {
+        if (!value) return null;
+        if (typeof value === 'string') {
+          if (directions[value]) return value;
+          const lowered = value.toLowerCase();
+          return directions[lowered] ? lowered : null;
+        }
+
+        if (isObject(value)) {
+          if (typeof value.direction === 'string') {
+            const direction = normalizeDirection(value.direction);
+            if (direction) return direction;
+          }
+
+          if (typeof value.dx === 'number' && typeof value.dy === 'number') {
+            if (value.dx === 0 && value.dy === -1) return 'up';
+            if (value.dx === 0 && value.dy === 1) return 'down';
+            if (value.dx === -1 && value.dy === 0) return 'left';
+            if (value.dx === 1 && value.dy === 0) return 'right';
+          }
+        }
+
+        return null;
+      }
+
+      const keyToDirection = directionAliases;
+
       const state = {
         status: 'idle',
         score: 0,
         timerMs: 0,
+        tickCount: 0,
         frameAccumulator: 0,
         tickAccumulator: 0,
         direction: initialDirection,
@@ -227,6 +362,121 @@
 
       function stepRng(seed) {
         return (Math.imul(seed, lcgMultiplier) + lcgIncrement) >>> 0;
+      }
+
+      function copySnake(rawSnake) {
+        return (rawSnake || []).map((segment) => ({
+          col: clampCell(Number.isInteger(segment && segment.col) ? segment.col : 0, board.cols),
+          row: clampCell(Number.isInteger(segment && segment.row) ? segment.row : 0, board.rows)
+        }));
+      }
+
+      function persistProgressState() {
+        persistProgress(persistedProgress);
+      }
+
+      function setHighScore(value) {
+        const parsed = safeUnsigned(value, highScore);
+        if (parsed > highScore) {
+          highScore = parsed;
+          persistedProgress.highScore = parsed;
+          highScoreEl.textContent = String(highScore);
+          persistProgressState();
+        }
+      }
+
+      function buildRunSummary(runState, context, extras = {}) {
+        const head = runState.snake[0] || null;
+        return {
+          version: 1,
+          context,
+          timestamp: Date.now(),
+          status: runState.status,
+          score: runState.score,
+          durationMs: runState.timerMs,
+          ticks: runState.tickCount,
+          seed: runState.seed,
+          maxTicks: extras.maxTicks === undefined ? null : extras.maxTicks,
+          scenario: extras.scenario || null,
+          snakeLength: runState.snake.length,
+          head: head ? { col: head.col, row: head.row } : null,
+          item: runState.item ? { col: runState.item.col, row: runState.item.row } : null,
+          movesApplied: safeUnsigned(extras.movesApplied, runState.tickCount),
+          endedBy: extras.endedBy || 'completed'
+        };
+      }
+
+      function finalizeRun(runState, context, extras = {}) {
+        const persistSummary = extras.persist === false ? false : true;
+        const shouldUpdateScore =
+          extras.updateHighScore === false ? false : context === 'gameplay';
+
+        const summary = buildRunSummary(runState, context, extras);
+
+        if (shouldUpdateScore) {
+          setHighScore(runState.score);
+        }
+
+        persistedProgress.lastRunSummary = summary;
+        if (persistSummary) {
+          persistProgressState();
+        }
+
+        return summary;
+      }
+
+      function createInitialRunState(overrides = {}) {
+        const runState = {
+          status: 'idle',
+          score: safeUnsigned(overrides.score, 0),
+          timerMs: safeUnsigned(overrides.timerMs, 0),
+          tickCount: safeUnsigned(overrides.tickCount, 0),
+          frameAccumulator: 0,
+          tickAccumulator: 0,
+          direction: clampDirection(overrides.direction),
+          queuedDirection: clampDirection(overrides.queuedDirection || overrides.direction),
+          snake: [],
+          growthQueued: safeUnsigned(overrides.growthQueued, 0),
+          seed: seedFromInput(overrides.seed, initialSeed),
+          item: null,
+          phase: safeUnsigned(overrides.phase, 0),
+          lastFrameTs: 0
+        };
+
+        runState.snake = copySnake(
+          overrides.snake && overrides.snake.length
+            ? overrides.snake
+            : [{ col: 5, row: 5 }, { col: 4, row: 5 }, { col: 3, row: 5 }]
+        );
+
+        const blocked = occupiedBySnake(runState.snake);
+        const spawn = pickSpawn(runState.seed, blocked);
+        runState.item = spawn.item;
+        runState.seed = spawn.nextSeed;
+        return runState;
+      }
+
+      function resetState() {
+        const initial = createInitialRunState();
+        Object.assign(state, initial);
+        state.status = 'idle';
+
+        startBtn.disabled = false;
+        pauseBtn.disabled = true;
+        resetBtn.disabled = false;
+        updateHud();
+        drawBoard();
+      }
+
+      function handleRunComplete(completedState, extras = {}) {
+        pauseButtonsAfterEnd();
+        finalizeRun(completedState, 'gameplay', {
+          scenario: typeof extras.scenario === 'string' ? extras.scenario : null,
+          endedBy: extras.endedBy || 'completed',
+          movesApplied: completedState.tickCount,
+          maxTicks: null,
+          persist: true
+        });
       }
 
       function keyFromCell(col, row) {
@@ -294,37 +544,6 @@
         return a.col === b.col && a.row === b.row;
       }
 
-      function resetState() {
-        state.status = 'idle';
-        state.score = 0;
-        state.timerMs = 0;
-        state.frameAccumulator = 0;
-        state.tickAccumulator = 0;
-        state.direction = initialDirection;
-        state.queuedDirection = initialDirection;
-        state.growthQueued = 0;
-        state.seed = initialSeed;
-        state.phase = 0;
-        state.lastFrameTs = 0;
-
-        state.snake = [
-          { col: 5, row: 5 },
-          { col: 4, row: 5 },
-          { col: 3, row: 5 }
-        ];
-
-        const blocked = occupiedBySnake(state.snake);
-        const spawn = pickSpawn(state.seed, blocked);
-        state.item = spawn.item;
-        state.seed = spawn.nextSeed;
-
-        startBtn.disabled = false;
-        pauseBtn.disabled = true;
-        resetBtn.disabled = false;
-        updateHud();
-        drawBoard();
-      }
-
       function pauseButtonsAfterEnd() {
         pauseBtn.disabled = true;
         startBtn.disabled = true;
@@ -336,12 +555,14 @@
         state.queuedDirection = intent;
       }
 
-      function step() {
-        if (state.status !== 'running') return;
+      function stepWithState(runState, onComplete) {
+        if (runState.status !== 'running') return;
 
-        state.direction = nextDirectionFromInput(state.direction, state.queuedDirection);
-        const move = directions[state.direction];
-        const head = state.snake[0];
+        const prevStatus = runState.status;
+
+        runState.direction = nextDirectionFromInput(runState.direction, runState.queuedDirection);
+        const move = directions[runState.direction];
+        const head = runState.snake[0];
         const nextHead = {
           col: head.col + move.dx,
           row: head.row + move.dy
@@ -354,44 +575,122 @@
           nextHead.row >= board.rows;
 
         const bodyForSelfCollision =
-          state.growthQueued > 0 ? state.snake : state.snake.slice(0, -1);
+          runState.growthQueued > 0 ? runState.snake : runState.snake.slice(0, -1);
 
         const hitSelf = bodyForSelfCollision.some((segment) => isSameCell(segment, nextHead));
 
         if (hitWall || hitSelf) {
-          state.status = 'gameOver';
-          pauseButtonsAfterEnd();
+          runState.status = 'gameOver';
+          if (prevStatus === 'running' && onComplete) {
+            onComplete(runState, { endedBy: 'collision' });
+          }
           return;
         }
 
-        state.snake.unshift(nextHead);
+        runState.snake.unshift(nextHead);
 
-        let growthQueued = state.growthQueued;
-        const didPickup = state.item && isSameCell(nextHead, state.item);
+        let growthQueued = runState.growthQueued;
+        const didPickup = runState.item && isSameCell(nextHead, runState.item);
 
         if (didPickup) {
           growthQueued += growthPerItem;
-          state.score += 1;
+          runState.score += 1;
 
-          const blocked = occupiedBySnake(state.snake);
-          const spawn = pickSpawn(state.seed, blocked);
-          state.item = spawn.item;
-          state.seed = spawn.nextSeed;
+          const blocked = occupiedBySnake(runState.snake);
+          const spawn = pickSpawn(runState.seed, blocked);
+          runState.item = spawn.item;
+          runState.seed = spawn.nextSeed;
 
-          if (!state.item) {
-            state.status = 'won';
-            pauseButtonsAfterEnd();
+          if (!runState.item) {
+            runState.status = 'won';
           }
         }
 
         if (growthQueued > 0) {
           growthQueued -= 1;
         } else {
-          state.snake.pop();
+          runState.snake.pop();
         }
 
-        state.growthQueued = growthQueued;
-        state.queuedDirection = state.direction;
+        runState.growthQueued = growthQueued;
+        runState.queuedDirection = runState.direction;
+        runState.tickCount += 1;
+
+        if (runState.status !== prevStatus && onComplete) {
+          onComplete(runState, { endedBy: runState.status === 'won' ? 'all-items-collected' : 'collision' });
+        }
+      }
+
+      function normalizeScenarioMoves(movesInput) {
+        const parsed = [];
+        if (!Array.isArray(movesInput)) return parsed;
+
+        for (let index = 0; index < movesInput.length; index += 1) {
+          const nextMove = movesInput[index];
+          const direction = normalizeDirection(nextMove);
+          if (!direction) continue;
+          const tick = safeInteger(nextMove && (nextMove.tick ?? nextMove.at), index);
+          parsed.push({
+            tick: safeUnsigned(tick, index),
+            direction
+          });
+        }
+
+        return parsed;
+      }
+
+      function runScenario(options = {}) {
+        const normalizedMoves = normalizeScenarioMoves(options.moves);
+        const moveMap = new Map();
+        for (const move of normalizedMoves) {
+          moveMap.set(move.tick, move.direction);
+        }
+
+        const runState = createInitialRunState({
+          seed: seedFromInput(options.seed, initialSeed),
+          direction: clampDirection(options.direction),
+          queuedDirection: clampDirection(options.queuedDirection || options.direction),
+          score: safeUnsigned(options.score, 0),
+          growthQueued: safeUnsigned(options.growthQueued, 0),
+          snake: copySnake(
+            isObject(options.startState) && Array.isArray(options.startState.snake)
+              ? options.startState.snake
+              : []
+          )
+        });
+
+        runState.status = 'running';
+        runState.timerMs = 0;
+        runState.tickCount = 0;
+
+        const maxTicks = safeUnsigned(options.maxTicks, 200);
+        let endedBy = 'running';
+
+        for (let tick = 0; tick < maxTicks && runState.status === 'running'; tick += 1) {
+          const queuedDirection = moveMap.get(tick);
+          if (queuedDirection) {
+            runState.queuedDirection = queuedDirection;
+          }
+          stepWithState(runState);
+          runState.timerMs = (tick + 1) * tickMs;
+        }
+
+        if (runState.status === 'running' && runState.tickCount >= maxTicks) {
+          endedBy = 'max-ticks';
+        } else if (runState.status === 'gameOver' || runState.status === 'won') {
+          endedBy = runState.status === 'won' ? 'all-items-collected' : 'collision';
+        }
+
+        const scenarioSummary = finalizeRun(runState, 'scenario', {
+          maxTicks,
+          scenario: typeof options.name === 'string' ? options.name : null,
+          movesApplied: runState.tickCount,
+          endedBy,
+          persist: options.persist !== false,
+          updateHighScore: false
+        });
+
+        return scenarioSummary;
       }
 
       function measureLayout() {
@@ -589,6 +888,7 @@
 
       function updateHud() {
         scoreEl.textContent = String(state.score);
+        highScoreEl.textContent = String(highScore);
         timerEl.textContent = (state.timerMs / 1000).toFixed(1);
 
         if (state.status === 'gameOver') {
@@ -607,6 +907,11 @@
         }
 
         hint.textContent = 'Press Start to begin. Growth queue: ' + state.growthQueued;
+      }
+
+      function updateHudFromPersistence() {
+        highScore = safeUnsigned(persistedProgress.highScore, highScore);
+        if (highScoreEl) highScoreEl.textContent = String(highScore);
       }
 
       function cellFromPointer(event) {
@@ -713,7 +1018,7 @@
 
           while (state.tickAccumulator >= tickMs && state.status === 'running') {
             state.tickAccumulator -= tickMs;
-            step();
+            stepWithState(state, handleRunComplete);
           }
 
           drawBoard();
@@ -746,6 +1051,16 @@
       pauseBtn.addEventListener('click', pauseGame);
       resetBtn.addEventListener('click', resetGame);
 
+      window.runScenario = runScenario;
+      window.getMinionsPersistedState = () => ({ ...persistedProgress });
+      window.clearMinionsPersistedState = () => {
+        persistedProgress.highScore = 0;
+        persistedProgress.lastRunSummary = null;
+        persistProgressState();
+        updateHudFromPersistence();
+      };
+
+      updateHudFromPersistence();
       resetState();
       measureLayout();
       requestAnimationFrame(loop);
