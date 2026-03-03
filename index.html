@@ -264,10 +264,11 @@
 
       function sanitizeSaveState(value) {
         if (!isObject(value)) return null;
-        if (!isObject(value.state)) return null;
-        if (!Array.isArray(value.state.snake) || !value.state.snake.length) return null;
+        const wrappedState = isObject(value.state) ? value : null;
+        const persistedState = wrappedState ? value.state : value;
+        if (!Array.isArray(persistedState.snake) || !persistedState.snake.length) return null;
 
-        const state = cloneRunState(value.state, {
+        const state = cloneRunState(persistedState, {
           allowEmptySnake: false,
           autoSpawnItem: false
         });
@@ -277,10 +278,21 @@
         }
 
         return {
-          version: safeUnsigned(value.version, storageVersion),
-          scenario: typeof value.scenario === 'string' ? value.scenario : null,
+          version: safeUnsigned(
+            wrappedState && value.version !== undefined ? value.version : persistedState.version,
+            storageVersion
+          ),
+          scenario: typeof (wrappedState && value.scenario ? value.scenario : persistedState.scenario) === 'string'
+            ? wrappedState && value.scenario ? value.scenario : persistedState.scenario
+            : null,
           state
         };
+      }
+
+      function resolveScenarioStartState(value) {
+        if (!isObject(value)) return null;
+        if (isObject(value.state) && isObject(value.state.snake)) return value.state;
+        return value;
       }
 
       function loadPersistedProgress() {
@@ -772,7 +784,9 @@
 
       function runScenario(options = {}) {
         const normalizedMoves = normalizeScenarioMoves(options.moves);
-        const normalizedStartState = isObject(options.startState) ? options.startState : null;
+        const normalizedStartState = resolveScenarioStartState(
+          isObject(options.startState) ? options.startState : null
+        );
         const chosenSeed =
           normalizedStartState && normalizedStartState.seed !== undefined
             ? normalizedStartState.seed
