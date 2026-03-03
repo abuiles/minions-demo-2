@@ -1,0 +1,78 @@
+name: GitHub Pages (Production + PR Preview)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  pull-requests: write
+
+jobs:
+  build:
+    name: Prepare static site artifact
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy-prod:
+    name: Deploy to production Pages
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Log deployed URL
+        run: |
+          echo "Production Pages URL: ${{ steps.deploy.outputs.page_url }}"
+
+  deploy-preview:
+    name: Deploy PR preview to Pages
+    needs: build
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages-pr-${{ github.event.number }}
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Log preview URL
+        run: |
+          echo "PR preview URL: ${{ steps.deploy.outputs.page_url }}"
+
+      - name: Post preview link to PR
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.number }}
+          body: |
+            ### ✅ GitHub Pages preview ready
+            A preview deployment has been created/updated for this pull request.
+
+            **Preview URL:** ${{ steps.deploy.outputs.page_url }}
+            **Source branch:** `${{ github.head_ref }}`
+            **Commit:** `${{ github.event.pull_request.head.sha }}`

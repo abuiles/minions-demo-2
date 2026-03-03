@@ -26,6 +26,15 @@ A minimal front-end shell for the Minions demo game, built for static deployment
    - Click **Start**, then **Pause**, then **Reset** to confirm controls exist.
    - Target/score/timer UI updates as you play.
 
+### GitHub Pages previews for PRs
+
+This repository now uses a GitHub Actions workflow to deploy:
+
+- Production: every push to `main` deploys to the repository’s production Pages site.
+- Pull Requests: every PR targeting `main` gets a branch-specific PR preview deployment.
+
+On PR update, the workflow posts/updates a comment in the PR thread with the latest preview URL, and the deployment appears in the workflow logs as a verification point.
+
 ### Local validation command
 
 Use this command to quickly validate local availability:
@@ -43,15 +52,23 @@ Expected: a successful response with HTML output and no error/timeout.
 1. Ensure the working tree contains the built artifact (no build step required):
    - `index.html` exists at repository root.
 2. In GitHub, open **Settings > Pages**:
-   - **Source**: `Deploy from a branch`
-   - **Branch**: your working branch (usually `main`)  
-   - **Folder**: `/ (root)`
+   - **Source**: `GitHub Actions`
+3. Verify the main workflow is configured and pushed:
+   - `.github/workflows/pages-preview.yml` exists.
 3. Save and push changes to that branch.
-4. Wait for Pages publication to finish, then open:
+4. The workflow runs on `push` to `main` for production deployment and `pull_request` for preview deployments.
+5. Wait for Pages publication to finish, then open:
 
    - `https://<your-github-username>.github.io/<repository-name>/`
 
-5. Optional hard refresh after deployment to clear stale browser cache.
+### PR preview verification
+
+- Open the **Checks** tab for the PR run:
+  - `Deploy PR preview to Pages` logs include the preview URL.
+- Open the PR conversation:
+  - the workflow comments with a message containing the latest preview link.
+
+6. Optional hard refresh after deployment to clear stale browser cache.
 
 ### Pages URL validation
 
