@@ -104,6 +104,18 @@
       flex-wrap: wrap;
     }
 
+    .controls select {
+      flex: 1.4;
+      min-width: 220px;
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: #0d1b3c;
+      color: var(--text);
+      font-size: 0.96rem;
+      font-weight: 600;
+    }
+
     button {
       flex: 1;
       min-width: 120px;
@@ -154,12 +166,20 @@
       <span>Score: <strong id="score">0</strong></span>
       <span>Time: <strong id="timer">0.0</strong>s</span>
       </div>
+      <div class="hud-row">
+      <span>High Score: <strong id="highScore">0</strong></span>
+      <span>Last Run: <strong id="lastRun">none</strong></span>
+      </div>
     </div>
 
     <div class="controls">
       <button id="start">Start</button>
       <button id="pause" disabled>Pause</button>
       <button id="reset" disabled>Reset</button>
+    </div>
+    <div class="controls">
+      <select id="scenarioSelect" aria-label="Scenario selector"></select>
+      <button id="runScenario">Run Scenario</button>
     </div>
   </main>
   <footer>
@@ -174,6 +194,10 @@
       const startBtn = document.getElementById('start');
       const pauseBtn = document.getElementById('pause');
       const resetBtn = document.getElementById('reset');
+      const highScoreEl = document.getElementById('highScore');
+      const lastRunEl = document.getElementById('lastRun');
+      const scenarioSelect = document.getElementById('scenarioSelect');
+      const runScenarioBtn = document.getElementById('runScenario');
       const scoreEl = document.getElementById('score');
       const timerEl = document.getElementById('timer');
 
@@ -183,6 +207,48 @@
       const lcgMultiplier = 1664525;
       const lcgIncrement = 1013904223;
       const initialSeed = 0xdecafbad >>> 0;
+      const STORAGE_KEY = 'minions-demo-2:persistence:v1';
+      const SCENARIO_LIMIT_STEPS = 200;
+
+      const scenarioCatalog = [
+        {
+          id: 'collect-first-item',
+          label: 'Collect first item',
+          steps: ['right', 'down', 'right'],
+          description: 'Steers the active minion through the first spawned item quickly.',
+          maxTicks: 12
+        },
+        {
+          id: 'self-collision',
+          label: 'Immediate self collision',
+          steps: ['left'],
+          description: 'Forces controlled minion into its own body.',
+          maxTicks: 20
+        }
+      ];
+
+      const persistenceDefaults = {
+        version: 1,
+        highScore: 0,
+        lastRunSummary: null
+      };
+
+      const state = {
+        status: 'idle',
+        score: 0,
+        timerMs: 0,
+        tickAccumulator: 0,
+        world: {
+          item: null,
+          seed: initialSeed
+        },
+        phase: 0,
+        lastFrameTs: 0,
+        minions: [],
+        controlledMinionId: 0,
+        tickCount: 0,
+        scenarioReplay: null
+      };
 
       const minionsConfig = [
         {
@@ -239,25 +305,226 @@
         D: 'right'
       };
 
-      const state = {
-        status: 'idle',
-        score: 0,
-        timerMs: 0,
-        tickAccumulator: 0,
-        world: {
-          item: null,
-          seed: initialSeed
-        },
-        phase: 0,
-        lastFrameTs: 0,
-        minions: [],
-        controlledMinionId: 0
-      };
-
       let layout = null;
+      let persistence = loadPersistenceState();
+      const queryScenario = new URLSearchParams(window.location.search).get('scenario');
+
 
       function stepRng(seed) {
         return (Math.imul(seed, lcgMultiplier) + lcgIncrement) >>> 0;
+      }
+
+      function safeClone(value) {
+        return JSON.parse(JSON.stringify(value));
+      }
+
+      function sanitizePersistence(raw) {
+        if (!raw || typeof raw !== 'object') {
+          return safeClone(persistenceDefaults);
+        }
+
+        const highScore = Number.isFinite(raw.highScore) && raw.highScore >= 0
+          ? Math.floor(raw.highScore)
+          : 0;
+
+        const lastRunSummary = sanitizeRunSummary(raw.lastRunSummary);
+
+        return {
+          version: 1,
+          highScore,
+          lastRunSummary
+        };
+      }
+
+      function sanitizeRunSummary(summary) {
+        if (!summary || typeof summary !== 'object') return null;
+
+        const scenarioId = typeof summary.scenarioId === 'string' ? summary.scenarioId : null;
+        const mode = summary.mode === 'scenario' ? 'scenario' : 'live';
+        const status = typeof summary.status === 'string' ? summary.status : 'unknown';
+        const safeScore = Number.isFinite(summary.score) && summary.score >= 0
+          ? Math.floor(summary.score)
+          : 0;
+        const safeTimerMs = Number.isFinite(summary.timerMs) && summary.timerMs >= 0
+          ? Math.floor(summary.timerMs)
+          : 0;
+        const safeTickCount = Number.isFinite(summary.tickCount) && summary.tickCount >= 0
+          ? Math.floor(summary.tickCount)
+          : 0;
+        const safeSeed = Number.isFinite(summary.seed) ? Math.floor(summary.seed) >>> 0 : initialSeed;
+        const deterministicSig = typeof summary.signature === 'string'
+          ? summary.signature
+          : `${mode}|${status}|${scenarioId || 'none'}|${safeScore}|${safeTickCount}|${safeSeed}`;
+
+        return {
+          scenarioId,
+          mode,
+          status,
+          score: safeScore,
+          timerMs: safeTimerMs,
+          tickCount: safeTickCount,
+          timestamp: typeof summary.timestamp === 'string' ? summary.timestamp : new Date().toISOString(),
+          completedBy: typeof summary.completedBy === 'string' ? summary.completedBy : null,
+          seed: safeSeed,
+          signature: deterministicSig
+        };
+      }
+
+      function parseStoragePayload(rawValue) {
+        try {
+          return sanitizePersistence(JSON.parse(rawValue));
+        } catch {
+          return safeClone(persistenceDefaults);
+        }
+      }
+
+      function readStorage() {
+        try {
+          if (!window.localStorage) return null;
+          return window.localStorage.getItem(STORAGE_KEY);
+        } catch {
+          return null;
+        }
+      }
+
+      function writeStorage(value) {
+        try {
+          if (!window.localStorage) return false;
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      function loadPersistenceState() {
+        const storageValue = readStorage();
+        if (!storageValue) return safeClone(persistenceDefaults);
+        return parseStoragePayload(storageValue);
+      }
+
+      function persistState(nextPersistence) {
+        const safe = sanitizePersistence(nextPersistence);
+        persistence = safe;
+        writeStorage(safe);
+        renderPersistenceHud();
+      }
+
+      function updateHighScoreIfNeeded(nextScore) {
+        if (!Number.isFinite(nextScore)) return;
+        if (nextScore > persistence.highScore) {
+          const next = sanitizePersistence({
+            version: persistence.version,
+            highScore: nextScore,
+            lastRunSummary: persistence.lastRunSummary
+          });
+          persistState(next);
+        }
+      }
+
+      function buildRunSummary(completedBy) {
+        return sanitizeRunSummary({
+          scenarioId: state.scenarioReplay ? state.scenarioReplay.id : null,
+          mode: state.scenarioReplay ? 'scenario' : 'live',
+          status: state.status,
+          score: state.score,
+          timerMs: state.timerMs,
+          tickCount: state.tickCount,
+          timestamp: new Date().toISOString(),
+          completedBy: typeof completedBy === 'string' ? completedBy : 'end',
+          seed: state.world.seed
+        });
+      }
+
+      function commitRunSummary(completedBy) {
+        const summary = buildRunSummary(completedBy);
+        const next = sanitizePersistence({
+          version: persistence.version,
+          highScore: Math.max(persistence.highScore || 0, summary.score || 0),
+          lastRunSummary: summary
+        });
+        persistState(next);
+        return summary;
+      }
+
+      function snapshotState() {
+        return safeClone({
+          status: state.status,
+          score: state.score,
+          timerMs: state.timerMs,
+          tickAccumulator: state.tickAccumulator,
+          world: {
+            item: state.world.item ? { col: state.world.item.col, row: state.world.item.row } : null,
+            seed: state.world.seed
+          },
+          phase: state.phase,
+          lastFrameTs: state.lastFrameTs,
+          tickCount: state.tickCount,
+          controlledMinionId: state.controlledMinionId,
+          minions: state.minions.map((minion) => ({
+            id: minion.id,
+            status: minion.status,
+            direction: minion.direction,
+            queuedDirection: minion.queuedDirection,
+            segments: cloneSegments(minion.segments),
+            growthQueued: minion.growthQueued,
+            score: minion.score,
+            deathReason: minion.deathReason,
+            colors: { ...minion.colors }
+          }))
+        });
+      }
+
+      function restoreState(snap) {
+        if (!snap || typeof snap !== 'object') return;
+
+        state.status = snap.status;
+        state.score = snap.score;
+        state.timerMs = snap.timerMs;
+        state.tickAccumulator = snap.tickAccumulator;
+        state.world = {
+          item: snap.world && snap.world.item ? { col: snap.world.item.col, row: snap.world.item.row } : null,
+          seed: snap.world && Number.isFinite(snap.world.seed) ? snap.world.seed >>> 0 : initialSeed
+        };
+        state.phase = snap.phase;
+        state.lastFrameTs = snap.lastFrameTs;
+        state.tickCount = snap.tickCount || 0;
+        state.controlledMinionId = snap.controlledMinionId || 0;
+        state.minions = (snap.minions || []).map((minion) => ({
+          id: minion.id,
+          status: minion.status || 'alive',
+          direction: minion.direction || 'up',
+          queuedDirection: minion.queuedDirection || minion.direction || 'up',
+          segments: cloneSegments(minion.segments || []),
+          growthQueued: Number.isFinite(minion.growthQueued) ? minion.growthQueued : 0,
+          score: Number.isFinite(minion.score) ? minion.score : 0,
+          deathReason: minion.deathReason || null,
+          colors: minion.colors || { body: '#fff', head: '#fff', accent: '#fff' }
+        }));
+      }
+
+      function fillScenarioControls() {
+        scenarioSelect.innerHTML = '';
+        for (const scenario of scenarioCatalog) {
+          const option = document.createElement('option');
+          option.value = scenario.id;
+          option.textContent = scenario.label;
+          scenarioSelect.appendChild(option);
+        }
+        if (scenarioCatalog[0]) {
+          scenarioSelect.value = scenarioCatalog[0].id;
+        }
+      }
+
+      function renderPersistenceHud() {
+        highScoreEl.textContent = String(persistence.highScore || 0);
+        if (!persistence.lastRunSummary) {
+          lastRunEl.textContent = 'none';
+          return;
+        }
+
+        const summary = persistence.lastRunSummary;
+        lastRunEl.textContent = `${summary.mode}:${summary.status}:${summary.score} (@${summary.tickCount}t)`;
       }
 
       function getCellKey(col, row) {
@@ -381,28 +648,104 @@
         }
       }
 
-      function resetState() {
+      function getScenarioById(id) {
+        return scenarioCatalog.find((scenario) => scenario.id === id) || null;
+      }
+
+      function initializeRun(seed = initialSeed) {
+        const nextSeed = Number.isFinite(seed) ? seed >>> 0 : initialSeed;
         state.status = 'idle';
         state.score = 0;
         state.timerMs = 0;
         state.tickAccumulator = 0;
         state.world.item = null;
-        state.world.seed = initialSeed;
+        state.world.seed = nextSeed;
         state.phase = 0;
         state.lastFrameTs = 0;
         state.controlledMinionId = 0;
+        state.tickCount = 0;
+        state.scenarioReplay = null;
         state.minions = minionsConfig.map(createFreshMinion);
 
         const blocked = buildBlockedCells();
         const spawn = pickSpawn(state.world.seed, blocked);
         state.world.item = spawn.item;
         state.world.seed = spawn.nextSeed;
+      }
 
+      function resetState() {
+        initializeRun(initialSeed);
         startBtn.disabled = false;
         pauseBtn.disabled = true;
         resetBtn.disabled = false;
         updateHud();
         drawBoard();
+      }
+
+      function runScenario(scenarioId) {
+        const scenario = getScenarioById(scenarioId);
+        if (!scenario) {
+          hint.textContent = `Scenario "${scenarioId}" not found.`;
+          return null;
+        }
+
+        if (state.status === 'running') {
+          hint.textContent = 'Stop the running game before running a scenario.';
+          return null;
+        }
+
+        const snapshot = snapshotState();
+        initializeRun(Number.isFinite(scenario.seed) ? scenario.seed : initialSeed);
+
+        const steps = Array.isArray(scenario.steps) ? scenario.steps : [];
+        const requestedTicks = Number.isFinite(scenario.maxTicks) && scenario.maxTicks > 0
+          ? Math.floor(scenario.maxTicks)
+          : steps.length;
+        const maxTicks = Math.min(
+          SCENARIO_LIMIT_STEPS,
+          Math.max(0, Number.isFinite(requestedTicks) ? requestedTicks : steps.length)
+        );
+
+        state.status = 'running';
+        state.scenarioReplay = {
+          id: scenario.id,
+          mode: 'scenario',
+          maxTicks
+        };
+
+        for (let i = 0; i < maxTicks; i += 1) {
+          if (state.status !== 'running') {
+            break;
+          }
+          const command = steps[i];
+          if (command) {
+            setDirection(command);
+          }
+          step();
+        }
+
+        state.timerMs = state.tickCount * tickMs;
+        const completionReason = state.status === 'gameOver' || state.status === 'won'
+          ? `scenario-${state.status}`
+          : 'scenario-tick-limit';
+
+        const summary = buildRunSummary(completionReason);
+        summary.mode = 'scenario';
+        const persistedSummary = commitRunSummary(completionReason);
+
+        restoreState(snapshot);
+        state.scenarioReplay = null;
+        updateHud();
+        drawBoard();
+        renderPersistenceHud();
+
+        hint.textContent = scenario.id ? `Scenario "${scenario.label || scenario.id}" finished (${completionReason}).` : hint.textContent;
+
+        return {
+          scenario,
+          summary,
+          persistedSummary
+        };
       }
 
       function pauseButtonsAfterEnd() {
@@ -420,6 +763,7 @@
 
       function step() {
         if (state.status !== 'running') return;
+        state.tickCount += 1;
 
         const occupancy = buildOccupancy();
         const proposals = [];
@@ -594,12 +938,14 @@
         const anyAlive = state.minions.some((minion) => minion.status === 'alive');
         if (!anyAlive) {
           state.status = 'gameOver';
+          commitRunSummary('step-end');
           pauseButtonsAfterEnd();
           return;
         }
 
         if (state.world.item === null) {
           state.status = 'won';
+          commitRunSummary('step-end');
           pauseButtonsAfterEnd();
           return;
         }
@@ -920,6 +1266,7 @@
         pauseBtn.disabled = false;
         resetBtn.disabled = false;
         updateHud();
+        state.scenarioReplay = null;
       }
 
       function pauseGame() {
@@ -981,8 +1328,36 @@
       });
       pauseBtn.addEventListener('click', pauseGame);
       resetBtn.addEventListener('click', resetGame);
+      runScenarioBtn.addEventListener('click', () => {
+        runScenario(scenarioSelect.value);
+      });
 
+      window.minionsDemo = {
+        runScenario,
+        getPersistence: () => safeClone(persistence),
+        getStateSummary: () => buildRunSummary('manual-readout'),
+        getScenarioCatalog: () => safeClone(scenarioCatalog),
+        resetGame
+      };
+      window.minionsScenarioRunner = {
+        run: runScenario,
+        scenarios: () => safeClone(scenarioCatalog),
+        runLast: () => runScenario(queryScenario || scenarioCatalog[0]?.id)
+      };
+
+      fillScenarioControls();
+      renderPersistenceHud();
       resetState();
+      if (scenarioCatalog.length) {
+        runScenarioBtn.disabled = false;
+        const queryScenarioRef = getScenarioById(queryScenario);
+        if (queryScenarioRef) {
+          scenarioSelect.value = queryScenarioRef.id;
+          runScenario(queryScenarioRef.id);
+        }
+      } else {
+        runScenarioBtn.disabled = true;
+      }
       measureLayout();
       requestAnimationFrame(loop);
     })();
