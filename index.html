@@ -187,7 +187,9 @@
       const initialSeed = 0xdecafbad >>> 0;
       const initialDirection = 'right';
       const storageKey = 'minions-demo-2-state-v1';
+      const storageVersion = 1;
       const defaultPersistence = {
+        version: storageVersion,
         highScore: 0,
         lastRunSummary: null
       };
@@ -208,10 +210,53 @@
         return typeof num === 'number' && num >= 0 ? num : fallback;
       }
 
+      function sanitizeCell(value, fallback = null) {
+        if (!isObject(value)) return fallback;
+        const col = safeInteger(value.col, NaN);
+        const row = safeInteger(value.row, NaN);
+        if (!Number.isInteger(col) || !Number.isInteger(row)) {
+          return fallback;
+        }
+
+        return {
+          col: clampCell(col, board.cols),
+          row: clampCell(row, board.rows)
+        };
+      }
+
+      function cloneSummary(value) {
+        if (!isObject(value)) return null;
+        return {
+          version: safeUnsigned(value.version, storageVersion),
+          timestamp: safeUnsigned(value.timestamp, Date.now()),
+          context: typeof value.context === 'string' ? value.context : 'unknown',
+          status: typeof value.status === 'string' ? value.status : 'unknown',
+          score: safeUnsigned(value.score, 0),
+          durationMs: safeUnsigned(value.durationMs, 0),
+          ticks: safeUnsigned(value.ticks, 0),
+          seed: safeUnsigned(value.seed, initialSeed),
+          maxTicks: value.maxTicks === undefined || value.maxTicks === null ? null : safeUnsigned(value.maxTicks, 0),
+          scenario: value.scenario || null,
+          snakeLength: safeUnsigned(value.snakeLength, 0),
+          head: sanitizeCell(value.head),
+          item: sanitizeCell(value.item),
+          movesApplied: safeUnsigned(value.movesApplied, 0),
+          endedBy: typeof value.endedBy === 'string' ? value.endedBy : null
+        };
+      }
+
       function sanitizeDirection(value) {
         if (!value) return null;
         const key = String(value);
         return directions[key] ? key : directions[key.toLowerCase()] ? key.toLowerCase() : null;
+      }
+
+      function clonePersistedState(state) {
+        return {
+          version: storageVersion,
+          highScore: safeUnsigned(state && state.highScore, 0),
+          lastRunSummary: cloneSummary(state && state.lastRunSummary)
+        };
       }
 
       function sanitizeSummary(value) {
@@ -225,15 +270,11 @@
           durationMs: safeUnsigned(value.durationMs, 0),
           ticks: safeUnsigned(value.ticks, 0),
           seed: safeUnsigned(value.seed, initialSeed),
-          maxTicks: value.maxTicks === undefined ? null : safeUnsigned(value.maxTicks, 0),
+          maxTicks: value.maxTicks === undefined || value.maxTicks === null ? null : safeUnsigned(value.maxTicks, 0),
           scenario: value.scenario || null,
           snakeLength: safeUnsigned(value.snakeLength, 0),
-          head: value.head && Number.isInteger(value.head.col) && Number.isInteger(value.head.row)
-            ? { col: value.head.col, row: value.head.row }
-            : null,
-          item: value.item && Number.isInteger(value.item.col) && Number.isInteger(value.item.row)
-            ? { col: value.item.col, row: value.item.row }
-            : null,
+          head: sanitizeCell(value.head),
+          item: sanitizeCell(value.item),
           movesApplied: safeUnsigned(value.movesApplied, 0),
           endedBy: typeof value.endedBy === 'string' ? value.endedBy : null
         };
@@ -257,6 +298,7 @@
           }
 
           const loaded = {
+            version: safeUnsigned(parsed.version, storageVersion),
             highScore: safeUnsigned(parsed.highScore, defaultPersistence.highScore),
             lastRunSummary: sanitizeSummary(parsed.lastRunSummary)
           };
@@ -272,7 +314,7 @@
             return;
           }
 
-          localStorage.setItem(storageKey, JSON.stringify(nextState));
+          localStorage.setItem(storageKey, JSON.stringify(clonePersistedState(nextState)));
         } catch (_error) {
           return;
         }
@@ -390,7 +432,12 @@
         return {
           version: 1,
           context,
-          timestamp: Date.now(),
+          timestamp: safeUnsigned(
+            extras.timestamp,
+            context === 'scenario' && !Object.prototype.hasOwnProperty.call(extras, 'timestamp')
+              ? 0
+              : Date.now()
+          ),
           status: runState.status,
           score: runState.score,
           durationMs: runState.timerMs,
@@ -450,9 +497,14 @@
         );
 
         const blocked = occupiedBySnake(runState.snake);
-        const spawn = pickSpawn(runState.seed, blocked);
-        runState.item = spawn.item;
-        runState.seed = spawn.nextSeed;
+        const providedItem = sanitizeCell(overrides.item);
+        if (providedItem && !blocked.has(keyFromCell(providedItem.col, providedItem.row))) {
+          runState.item = providedItem;
+        } else {
+          const spawn = pickSpawn(runState.seed, blocked);
+          runState.item = spawn.item;
+          runState.seed = spawn.nextSeed;
+        }
         return runState;
       }
 
@@ -636,6 +688,7 @@
           });
         }
 
+        parsed.sort((a, b) => a.tick - b.tick);
         return parsed;
       }
 
@@ -646,33 +699,69 @@
           moveMap.set(move.tick, move.direction);
         }
 
+        const normalizedStartState = isObject(options.startState) ? options.startState : null;
+        const chosenSeed =
+          normalizedStartState && normalizedStartState.seed !== undefined
+            ? normalizedStartState.seed
+            : options.seed;
+
         const runState = createInitialRunState({
-          seed: seedFromInput(options.seed, initialSeed),
-          direction: clampDirection(options.direction),
-          queuedDirection: clampDirection(options.queuedDirection || options.direction),
-          score: safeUnsigned(options.score, 0),
-          growthQueued: safeUnsigned(options.growthQueued, 0),
+          seed: seedFromInput(chosenSeed, initialSeed),
+          direction:
+            normalizedStartState && normalizedStartState.direction !== undefined
+              ? normalizedStartState.direction
+              : options.direction,
+          queuedDirection:
+            normalizedStartState && normalizedStartState.queuedDirection !== undefined
+              ? normalizedStartState.queuedDirection
+              : options.queuedDirection || options.direction,
+          score:
+            normalizedStartState && normalizedStartState.score !== undefined
+              ? normalizedStartState.score
+              : options.score,
+          growthQueued:
+            normalizedStartState && normalizedStartState.growthQueued !== undefined
+              ? normalizedStartState.growthQueued
+              : options.growthQueued,
+          timerMs:
+            normalizedStartState && normalizedStartState.durationMs !== undefined
+              ? normalizedStartState.durationMs
+              : options.timerMs,
+          tickCount:
+            normalizedStartState && normalizedStartState.ticks !== undefined
+              ? normalizedStartState.ticks
+              : options.tickCount,
+          phase:
+            normalizedStartState && normalizedStartState.phase !== undefined
+              ? normalizedStartState.phase
+              : options.phase,
+          item:
+            normalizedStartState && normalizedStartState.item
+              ? normalizedStartState.item
+              : null,
           snake: copySnake(
-            isObject(options.startState) && Array.isArray(options.startState.snake)
-              ? options.startState.snake
+            normalizedStartState && Array.isArray(normalizedStartState.snake)
+              ? normalizedStartState.snake
               : []
           )
         });
 
         runState.status = 'running';
-        runState.timerMs = 0;
-        runState.tickCount = 0;
+        runState.timerMs = safeUnsigned(runState.timerMs, 0);
+        runState.tickCount = safeUnsigned(runState.tickCount, 0);
 
         const maxTicks = safeUnsigned(options.maxTicks, 200);
+        const maxRemainingTicks = Math.max(0, maxTicks - runState.tickCount);
+        const timerOffsetMs = safeUnsigned(runState.timerMs, 0);
         let endedBy = 'running';
 
-        for (let tick = 0; tick < maxTicks && runState.status === 'running'; tick += 1) {
+        for (let tick = 0; tick < maxRemainingTicks && runState.status === 'running'; tick += 1) {
           const queuedDirection = moveMap.get(tick);
           if (queuedDirection) {
             runState.queuedDirection = queuedDirection;
           }
           stepWithState(runState);
-          runState.timerMs = (tick + 1) * tickMs;
+          runState.timerMs = timerOffsetMs + (tick + 1) * tickMs;
         }
 
         if (runState.status === 'running' && runState.tickCount >= maxTicks) {
@@ -686,6 +775,7 @@
           scenario: typeof options.name === 'string' ? options.name : null,
           movesApplied: runState.tickCount,
           endedBy,
+          timestamp: safeUnsigned(options.timestamp, 0),
           persist: options.persist !== false,
           updateHighScore: false
         });
@@ -1052,7 +1142,7 @@
       resetBtn.addEventListener('click', resetGame);
 
       window.runScenario = runScenario;
-      window.getMinionsPersistedState = () => ({ ...persistedProgress });
+      window.getMinionsPersistedState = () => clonePersistedState(persistedProgress);
       window.clearMinionsPersistedState = () => {
         persistedProgress.highScore = 0;
         persistedProgress.lastRunSummary = null;
