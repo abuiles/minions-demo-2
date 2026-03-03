@@ -152,7 +152,12 @@
       </p>
       <div class="hud-row">
       <span>Score: <strong id="score">0</strong></span>
+      <span>High Score: <strong id="highScore">0</strong></span>
       <span>Time: <strong id="timer">0.0</strong>s</span>
+      </div>
+      <div class="hud-row">
+        <span>Last run: <strong id="lastRunScore">-</strong></span>
+        <span id="lastRunStatus">-</span>
       </div>
     </div>
 
@@ -176,6 +181,9 @@
       const resetBtn = document.getElementById('reset');
       const scoreEl = document.getElementById('score');
       const timerEl = document.getElementById('timer');
+      const highScoreEl = document.getElementById('highScore');
+      const lastRunScoreEl = document.getElementById('lastRunScore');
+      const lastRunStatusEl = document.getElementById('lastRunStatus');
 
       const board = { cols: 12, rows: 12 };
       const tickMs = 240;
@@ -184,6 +192,100 @@
       const lcgIncrement = 1013904223;
       const initialSeed = 0xdecafbad >>> 0;
       const initialDirection = 'right';
+      const localStorageKeys = {
+        highScore: 'minions-demo-2.highScore.v1',
+        lastRunSummary: 'minions-demo-2.lastRunSummary.v1'
+      };
+      const defaultSummary = {
+        status: 'neverStarted',
+        score: 0,
+        timerMs: 0,
+        seed: initialSeed,
+        tickCount: 0,
+        snakeLength: 0,
+        growthQueued: 0,
+        timestamp: 0
+      };
+      const scenarioLibrary = {
+        collectThree: {
+          label: 'collectThree',
+          maxTicks: 300,
+          moves: ['up', 'up', 'right', 'right', 'down', 'down', 'left', 'left'],
+          seed: initialSeed
+        },
+        wallCrash: {
+          label: 'wallCrash',
+          maxTicks: 24,
+          moves: [],
+          seed: initialSeed
+        }
+      };
+
+      function safeParseJson(raw, fallback) {
+        if (!raw) return fallback;
+        try {
+          return JSON.parse(raw);
+        } catch (error) {
+          return fallback;
+        }
+      }
+
+      function hasUsableLocalStorage() {
+        if (typeof window === 'undefined' || !window.localStorage) return false;
+        try {
+          const testKey = '__minions_ls_test__';
+          window.localStorage.setItem(testKey, '1');
+          window.localStorage.removeItem(testKey);
+          return true;
+        } catch (error) {
+          return false;
+        }
+      }
+
+      const storageEnabled = hasUsableLocalStorage();
+
+      function loadPersistedHighScore() {
+        if (!storageEnabled) return 0;
+        const raw = window.localStorage.getItem(localStorageKeys.highScore);
+        const value = safeParseJson(raw, 0);
+        return Number.isFinite(value) ? value : 0;
+      }
+
+      function loadPersistedSummary() {
+        if (!storageEnabled) return null;
+        const raw = window.localStorage.getItem(localStorageKeys.lastRunSummary);
+        const parsed = safeParseJson(raw, null);
+        return parsed && typeof parsed === 'object' ? parsed : null;
+      }
+
+      function sanitizeSummary(summary) {
+        if (!summary || typeof summary !== 'object') return null;
+        return {
+          status: String(summary.status || defaultSummary.status),
+          score: Number.isFinite(summary.score) ? summary.score : 0,
+          timerMs: Number.isFinite(summary.timerMs) ? summary.timerMs : 0,
+          seed: Number.isFinite(summary.seed) ? summary.seed >>> 0 : initialSeed,
+          tickCount: Number.isFinite(summary.tickCount) ? summary.tickCount : 0,
+          snakeLength: Number.isFinite(summary.snakeLength) ? summary.snakeLength : 0,
+          growthQueued: Number.isFinite(summary.growthQueued) ? summary.growthQueued : 0,
+          timestamp: Number.isFinite(summary.timestamp) ? summary.timestamp : 0
+        };
+      }
+
+      function persistJson(key, value) {
+        if (!storageEnabled) return;
+        try {
+          window.localStorage.setItem(key, JSON.stringify(value));
+        } catch (error) {
+          // Ignore write failures (quota exceeded / blocked storage).
+        }
+      }
+
+      function readSeedInput(seedInput) {
+        const parsed = Number(seedInput);
+        if (!Number.isFinite(parsed)) return initialSeed;
+        return (parsed >>> 0);
+      }
 
       const directions = {
         up: { dx: 0, dy: -1 },
@@ -209,8 +311,10 @@
 
       const state = {
         status: 'idle',
+        runId: 0,
         score: 0,
         timerMs: 0,
+        tickCount: 0,
         frameAccumulator: 0,
         tickAccumulator: 0,
         direction: initialDirection,
@@ -223,6 +327,11 @@
         lastFrameTs: 0
       };
 
+      let highScore = loadPersistedHighScore();
+      let lastRunSummary = sanitizeSummary(loadPersistedSummary()) || {
+        ...defaultSummary,
+        timestamp: Date.now()
+      };
       let layout = null;
 
       function stepRng(seed) {
@@ -294,29 +403,87 @@
         return a.col === b.col && a.row === b.row;
       }
 
-      function resetState() {
-        state.status = 'idle';
-        state.score = 0;
-        state.timerMs = 0;
-        state.frameAccumulator = 0;
-        state.tickAccumulator = 0;
-        state.direction = initialDirection;
-        state.queuedDirection = initialDirection;
-        state.growthQueued = 0;
-        state.seed = initialSeed;
-        state.phase = 0;
-        state.lastFrameTs = 0;
+      function cloneSnake(snake) {
+        return snake.map((segment) => ({ col: segment.col, row: segment.row }));
+      }
 
-        state.snake = [
+      function createRunState(seed, direction) {
+        const runSeed = readSeedInput(seed);
+        const initialSnake = [
           { col: 5, row: 5 },
           { col: 4, row: 5 },
           { col: 3, row: 5 }
         ];
 
-        const blocked = occupiedBySnake(state.snake);
-        const spawn = pickSpawn(state.seed, blocked);
-        state.item = spawn.item;
-        state.seed = spawn.nextSeed;
+        const nextDirection = direction && directions[direction] ? direction : initialDirection;
+        const runState = {
+          status: 'idle',
+          runId: 0,
+          score: 0,
+          timerMs: 0,
+          tickCount: 0,
+          frameAccumulator: 0,
+          tickAccumulator: 0,
+          direction: nextDirection,
+          queuedDirection: nextDirection,
+          snake: cloneSnake(initialSnake),
+          growthQueued: 0,
+          seed: runSeed,
+          item: null,
+          phase: 0,
+          lastFrameTs: 0,
+          endReason: null
+        };
+
+        const blocked = occupiedBySnake(runState.snake);
+        const spawn = pickSpawn(runState.seed, blocked);
+        runState.item = spawn.item;
+        runState.seed = spawn.nextSeed;
+
+        return runState;
+      }
+
+      function persistSummary(summary) {
+        if (!summary) return;
+        const normalized = sanitizeSummary(summary);
+        if (!normalized) return;
+        lastRunSummary = normalized;
+        persistJson(localStorageKeys.lastRunSummary, lastRunSummary);
+      }
+
+      function persistHighScoreValue(value) {
+        highScore = Math.max(0, Number(value) || 0);
+        persistJson(localStorageKeys.highScore, highScore);
+      }
+
+      function commitSummaryFromState(targetState, terminalStatus) {
+        const summary = {
+          status: terminalStatus || 'stopped',
+          score: targetState.score,
+          timerMs: targetState.timerMs,
+          seed: targetState.seed,
+          tickCount: targetState.tickCount,
+          snakeLength: targetState.snake.length,
+          growthQueued: targetState.growthQueued,
+          timestamp: Date.now()
+        };
+        if (summary.score > highScore) {
+          persistHighScoreValue(summary.score);
+        }
+        persistSummary(summary);
+        return summary;
+      }
+
+      function readbackSummary() {
+        const persisted = storageEnabled ? loadPersistedSummary() : null;
+        return sanitizeSummary(persisted) || sanitizeSummary(lastRunSummary) || defaultSummary;
+      }
+
+      function resetState() {
+        const nextRunId = state.runId + 1;
+        Object.assign(state, createRunState(initialSeed, initialDirection));
+        state.runId = nextRunId;
+        state.endReason = null;
 
         startBtn.disabled = false;
         pauseBtn.disabled = true;
@@ -336,12 +503,12 @@
         state.queuedDirection = intent;
       }
 
-      function step() {
-        if (state.status !== 'running') return;
+      function stepSimulation(targetState) {
+        if (targetState.status !== 'running') return;
 
-        state.direction = nextDirectionFromInput(state.direction, state.queuedDirection);
-        const move = directions[state.direction];
-        const head = state.snake[0];
+        targetState.direction = nextDirectionFromInput(targetState.direction, targetState.queuedDirection);
+        const move = directions[targetState.direction];
+        const head = targetState.snake[0];
         const nextHead = {
           col: head.col + move.dx,
           row: head.row + move.dy
@@ -354,44 +521,133 @@
           nextHead.row >= board.rows;
 
         const bodyForSelfCollision =
-          state.growthQueued > 0 ? state.snake : state.snake.slice(0, -1);
+          targetState.growthQueued > 0 ? targetState.snake : targetState.snake.slice(0, -1);
 
         const hitSelf = bodyForSelfCollision.some((segment) => isSameCell(segment, nextHead));
 
         if (hitWall || hitSelf) {
-          state.status = 'gameOver';
-          pauseButtonsAfterEnd();
+          targetState.status = 'gameOver';
+          targetState.endReason = 'gameOver';
+          targetState.queuedDirection = targetState.direction;
           return;
         }
 
-        state.snake.unshift(nextHead);
+        targetState.snake.unshift(nextHead);
+        targetState.tickCount += 1;
 
-        let growthQueued = state.growthQueued;
-        const didPickup = state.item && isSameCell(nextHead, state.item);
+        let growthQueued = targetState.growthQueued;
+        const didPickup = targetState.item && isSameCell(nextHead, targetState.item);
 
         if (didPickup) {
           growthQueued += growthPerItem;
-          state.score += 1;
+          targetState.score += 1;
 
-          const blocked = occupiedBySnake(state.snake);
-          const spawn = pickSpawn(state.seed, blocked);
-          state.item = spawn.item;
-          state.seed = spawn.nextSeed;
+          const blocked = occupiedBySnake(targetState.snake);
+          const spawn = pickSpawn(targetState.seed, blocked);
+          targetState.item = spawn.item;
+          targetState.seed = spawn.nextSeed;
 
-          if (!state.item) {
-            state.status = 'won';
-            pauseButtonsAfterEnd();
+          if (!targetState.item) {
+            targetState.status = 'won';
+            targetState.endReason = 'won';
           }
         }
 
         if (growthQueued > 0) {
           growthQueued -= 1;
         } else {
-          state.snake.pop();
+          targetState.snake.pop();
         }
 
-        state.growthQueued = growthQueued;
-        state.queuedDirection = state.direction;
+        targetState.growthQueued = growthQueued;
+        targetState.queuedDirection = targetState.direction;
+      }
+
+      function step() {
+        const previousStatus = state.status;
+        stepSimulation(state);
+
+        if (state.status !== previousStatus && state.endReason) {
+          commitSummaryFromState(state, state.endReason);
+          state.endReason = null;
+          pauseButtonsAfterEnd();
+        }
+      }
+
+      function runScenario(spec) {
+        const request = typeof spec === 'string'
+          ? scenarioLibrary[spec]
+          : spec;
+
+        if (!request) {
+          throw new Error('Unknown scenario');
+        }
+
+        const resolved = {
+          moves: request.moves || [],
+          seed: readSeedInput(request.seed),
+          maxTicks: Number.isFinite(request.maxTicks) ? request.maxTicks : request.moves.length,
+          expected: request.expected || null
+        };
+
+        const simulation = createRunState(resolved.seed, initialDirection);
+        simulation.status = 'running';
+
+        for (let i = 0; i < resolved.maxTicks; i += 1) {
+          if (simulation.status !== 'running') break;
+
+          const move = resolved.moves[i];
+          if (move && directions[move]) {
+            simulation.queuedDirection = move;
+          }
+
+          stepSimulation(simulation);
+        }
+
+        const status = simulation.endReason || simulation.status;
+        const summary = {
+          status,
+          score: simulation.score,
+          timerMs: simulation.tickCount * tickMs,
+          seed: simulation.seed,
+          tickCount: simulation.tickCount,
+          snakeLength: simulation.snake.length,
+          growthQueued: simulation.growthQueued,
+          item: simulation.item ? { ...simulation.item } : null,
+          endReason: simulation.endReason
+        };
+
+        if (!resolved.expected) {
+          return summary;
+        }
+
+        const mismatches = Object.keys(resolved.expected).reduce((result, key) => {
+          const expectedValue = resolved.expected[key];
+          if (summary[key] !== expectedValue) {
+            result.push({
+              key,
+              expectedValue,
+              actualValue: summary[key]
+            });
+          }
+          return result;
+        }, []);
+
+        return {
+          ...summary,
+          pass: mismatches.length === 0,
+          mismatches
+        };
+      }
+
+      function runBuiltInScenario(key, overrides = {}) {
+        const base = scenarioLibrary[key];
+        if (!base) {
+          throw new Error(`Unknown built-in scenario: ${key}`);
+        }
+        return runScenario(
+          Object.assign({}, base, overrides, { maxTicks: overrides.maxTicks ?? base.maxTicks })
+        );
       }
 
       function measureLayout() {
@@ -590,6 +846,11 @@
       function updateHud() {
         scoreEl.textContent = String(state.score);
         timerEl.textContent = (state.timerMs / 1000).toFixed(1);
+        highScoreEl.textContent = String(highScore);
+
+        const runSummary = readbackSummary();
+        lastRunScoreEl.textContent = runSummary.score != null ? `${runSummary.score}` : '-';
+        lastRunStatusEl.textContent = runSummary.status || '-';
 
         if (state.status === 'gameOver') {
           hint.textContent = 'Game over. Press Reset to start again.';
@@ -732,6 +993,15 @@
 
         requestAnimationFrame(loop);
       }
+
+      window.minionsPersistenceState = {
+        getHighScore: () => highScore,
+        getLastRunSummary: () => readbackSummary(),
+        runScenario,
+        runBuiltInScenario,
+        scenarioLibrary
+      };
+      window.runScenario = runScenario;
 
       canvas.addEventListener('pointerdown', handleDirectionFromPointer);
       window.addEventListener('keydown', handleKeydown);
