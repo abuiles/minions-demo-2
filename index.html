@@ -160,7 +160,7 @@
 
     <div class="hud">
       <p id="hint" style="margin: 0 0 0.45rem; color: var(--muted)">
-        Press Start to enter the deterministic multi-minion loop.
+        Press Start to enter the deterministic single-snake run.
       </p>
       <div class="hud-row">
       <span>Score: <strong id="score">0</strong></span>
@@ -222,7 +222,7 @@
           id: 'self-collision',
           label: 'Immediate self collision',
           steps: ['left'],
-          description: 'Forces controlled minion into its own body.',
+          description: 'Forces the snake into its own body.',
           maxTicks: 20
         }
       ];
@@ -244,44 +244,25 @@
         },
         phase: 0,
         lastFrameTs: 0,
-        minions: [],
-        controlledMinionId: 0,
+        snake: null,
         tickCount: 0,
         scenarioReplay: null
       };
 
-      const minionsConfig = [
-        {
-          id: 0,
-          direction: 'right',
-          segments: [
-            { col: 2, row: 2 },
-            { col: 1, row: 2 },
-            { col: 0, row: 2 }
-          ],
-          colors: { body: '#4f9cf4', head: '#f6df6a', accent: '#cce5ff' }
-        },
-        {
-          id: 1,
-          direction: 'left',
-          segments: [
-            { col: 9, row: 9 },
-            { col: 10, row: 9 },
-            { col: 11, row: 9 }
-          ],
-          colors: { body: '#74e7bf', head: '#f6f0a5', accent: '#ffffff' }
-        },
-        {
-          id: 2,
-          direction: 'down',
-          segments: [
-            { col: 6, row: 0 },
-            { col: 6, row: 1 },
-            { col: 6, row: 2 }
-          ],
-          colors: { body: '#ffb26a', head: '#f6df6a', accent: '#f7dca3' }
+      const snakeConfig = {
+        direction: 'right',
+        segments: [
+          { col: 2, row: 2 },
+          { col: 1, row: 2 },
+          { col: 0, row: 2 }
+        ],
+        colors: {
+          body: '#4f9cf4',
+          bodyAlt: '#7dc3ff',
+          head: '#f6df6a',
+          accent: '#cce5ff'
         }
-      ];
+      };
 
       const directions = {
         up: { dx: 0, dy: -1 },
@@ -460,18 +441,16 @@
           phase: state.phase,
           lastFrameTs: state.lastFrameTs,
           tickCount: state.tickCount,
-          controlledMinionId: state.controlledMinionId,
-          minions: state.minions.map((minion) => ({
-            id: minion.id,
-            status: minion.status,
-            direction: minion.direction,
-            queuedDirection: minion.queuedDirection,
-            segments: cloneSegments(minion.segments),
-            growthQueued: minion.growthQueued,
-            score: minion.score,
-            deathReason: minion.deathReason,
-            colors: { ...minion.colors }
-          }))
+          snake: state.snake ? {
+            status: state.snake.status,
+            direction: state.snake.direction,
+            queuedDirection: state.snake.queuedDirection,
+            segments: cloneSegments(state.snake.segments),
+            growthQueued: state.snake.growthQueued,
+            score: state.snake.score,
+            deathReason: state.snake.deathReason,
+            colors: { ...state.snake.colors }
+          } : null
         });
       }
 
@@ -489,18 +468,23 @@
         state.phase = snap.phase;
         state.lastFrameTs = snap.lastFrameTs;
         state.tickCount = snap.tickCount || 0;
-        state.controlledMinionId = snap.controlledMinionId || 0;
-        state.minions = (snap.minions || []).map((minion) => ({
-          id: minion.id,
-          status: minion.status || 'alive',
-          direction: minion.direction || 'up',
-          queuedDirection: minion.queuedDirection || minion.direction || 'up',
-          segments: cloneSegments(minion.segments || []),
-          growthQueued: Number.isFinite(minion.growthQueued) ? minion.growthQueued : 0,
-          score: Number.isFinite(minion.score) ? minion.score : 0,
-          deathReason: minion.deathReason || null,
-          colors: minion.colors || { body: '#fff', head: '#fff', accent: '#fff' }
-        }));
+        state.snake = snap.snake
+          ? {
+              status: snap.snake.status || 'alive',
+              direction: snap.snake.direction || 'up',
+              queuedDirection: snap.snake.queuedDirection || snap.snake.direction || 'up',
+              segments: cloneSegments(snap.snake.segments || []),
+              growthQueued: Number.isFinite(snap.snake.growthQueued) ? snap.snake.growthQueued : 0,
+              score: Number.isFinite(snap.snake.score) ? snap.snake.score : 0,
+              deathReason: snap.snake.deathReason || null,
+              colors: snap.snake.colors || {
+                body: '#fff',
+                bodyAlt: '#d2ebff',
+                head: '#fff',
+                accent: '#fff'
+              }
+            }
+          : createFreshSnake();
       }
 
       function fillScenarioControls() {
@@ -589,34 +573,25 @@
 
       function buildOccupancy() {
         const occupancy = new Map();
-        for (const minion of state.minions) {
-          for (let index = 0; index < minion.segments.length; index += 1) {
-            const segment = minion.segments[index];
-            const key = getCellKey(segment.col, segment.row);
-            const bucket = occupancy.get(key);
-            if (bucket) {
-              bucket.push({ minionId: minion.id, segmentIndex: index });
-            } else {
-              occupancy.set(key, [{ minionId: minion.id, segmentIndex: index }]);
-            }
-          }
+        if (!state.snake) return occupancy;
+        for (let index = 0; index < state.snake.segments.length; index += 1) {
+          const segment = state.snake.segments[index];
+          occupancy.set(getCellKey(segment.col, segment.row), index);
         }
         return occupancy;
       }
 
       function buildBlockedCells() {
         const blocked = new Set();
-        for (const minion of state.minions) {
-          for (const segment of minion.segments) {
-            blocked.add(getCellKey(segment.col, segment.row));
-          }
+        if (!state.snake) return blocked;
+        for (const segment of state.snake.segments) {
+          blocked.add(getCellKey(segment.col, segment.row));
         }
         return blocked;
       }
 
-      function createFreshMinion(config) {
+      function createFreshSnake(config = snakeConfig) {
         return {
-          id: config.id,
           status: 'alive',
           direction: config.direction,
           queuedDirection: config.direction,
@@ -624,28 +599,8 @@
           growthQueued: 0,
           score: 0,
           deathReason: null,
-          colors: config.colors
+          colors: { ...config.colors }
         };
-      }
-
-      function getControlledMinion() {
-        for (let offset = 0; offset < state.minions.length; offset += 1) {
-          const minion = state.minions[(state.controlledMinionId + offset) % state.minions.length];
-          if (minion.status === 'alive') return minion;
-        }
-        return null;
-      }
-
-      function cycleControlledMinion() {
-        if (!state.minions.length) return;
-        const len = state.minions.length;
-        for (let i = 1; i <= len; i += 1) {
-          const idx = (state.controlledMinionId + i) % len;
-          if (state.minions[idx].status === 'alive') {
-            state.controlledMinionId = idx;
-            return;
-          }
-        }
       }
 
       function getScenarioById(id) {
@@ -662,10 +617,9 @@
         state.world.seed = nextSeed;
         state.phase = 0;
         state.lastFrameTs = 0;
-        state.controlledMinionId = 0;
         state.tickCount = 0;
         state.scenarioReplay = null;
-        state.minions = minionsConfig.map(createFreshMinion);
+        state.snake = createFreshSnake();
 
         const blocked = buildBlockedCells();
         const spawn = pickSpawn(state.world.seed, blocked);
@@ -755,178 +709,96 @@
 
       function setDirection(intent) {
         if (!intent || !directions[intent]) return;
-        const active = getControlledMinion();
-        if (!active) return;
+        if (!state.snake || state.snake.status !== 'alive') return;
         if (state.status === 'gameOver' || state.status === 'won') return;
-        active.queuedDirection = intent;
+        state.snake.queuedDirection = intent;
       }
 
       function step() {
         if (state.status !== 'running') return;
         state.tickCount += 1;
 
+        if (!state.snake || state.snake.status !== 'alive') {
+          state.status = 'gameOver';
+          commitRunSummary('step-end');
+          pauseButtonsAfterEnd();
+          return;
+        }
+
         const occupancy = buildOccupancy();
-        const proposals = [];
-        const aliveMinions = state.minions.filter((minion) => minion.status === 'alive');
-        const minionsById = new Map(state.minions.map((minion) => [minion.id, minion]));
+        const nextDirection = nextDirectionFromInput(state.snake.direction, state.snake.queuedDirection);
+        const move = directions[nextDirection];
+        const head = state.snake.segments[0];
+        const nextHead = {
+          col: head.col + move.dx,
+          row: head.row + move.dy
+        };
+        const willGrow = Boolean(state.world.item && isSameCell(nextHead, state.world.item));
 
-        for (const minion of aliveMinions) {
-          const nextDirection = nextDirectionFromInput(minion.direction, minion.queuedDirection);
-          const move = directions[nextDirection];
-          const head = minion.segments[0];
-          const nextHead = {
-            col: head.col + move.dx,
-            row: head.row + move.dy
-          };
+        const wallCollision =
+          nextHead.col < 0 ||
+          nextHead.row < 0 ||
+          nextHead.col >= board.cols ||
+          nextHead.row >= board.rows;
 
-          const wallCollision =
-            nextHead.col < 0 ||
-            nextHead.row < 0 ||
-            nextHead.col >= board.cols ||
-            nextHead.row >= board.rows;
-
-          proposals.push({
-            minionId: minion.id,
-            minion,
-            direction: nextDirection,
-            nextHead,
-            willGrow: false,
-            wallCollision,
-            blocked: false,
-            headCollision: false,
-            bodyCollision: false
-          });
-        }
-
-        const itemClaimants = proposals
-          .filter((proposal) => !proposal.wallCollision && state.world.item && isSameCell(proposal.nextHead, state.world.item))
-          .map((proposal) => proposal.minionId);
-
-        const itemWinnerId = itemClaimants[0] ?? null;
-
-        const proposalById = new Map();
-        for (const proposal of proposals) {
-          if (state.world.item && isSameCell(proposal.nextHead, state.world.item) && proposal.minionId === itemWinnerId) {
-            proposal.willGrow = true;
-          }
-
-          if (proposal.wallCollision) {
-            proposal.blocked = true;
-            proposal.bodyCollision = true;
-            proposalById.set(proposal.minionId, proposal);
-            continue;
-          }
-
-          const key = getCellKey(proposal.nextHead.col, proposal.nextHead.row);
-          const occupants = occupancy.get(key);
-          const selfMinion = proposal.minion;
-          const selfTail = selfMinion.segments[selfMinion.segments.length - 1];
-          const selfTailIsHead = selfMinion.segments.length === 1;
-
-          if (occupants) {
-            for (const occupant of occupants) {
-              const ownerMinion = minionsById.get(occupant.minionId);
-              if (!ownerMinion) continue;
-
-              const ownerSegments = ownerMinion.segments;
-              const ownerTail = ownerSegments[ownerSegments.length - 1];
-              const ownerTailIndex = ownerSegments.length - 1;
-              const ownerProposal = proposalById.get(occupant.minionId);
-              const ownerWillGrow = ownerProposal ? ownerProposal.willGrow : false;
-              const ownerTailWillVacate =
-                occupant.minionId === proposal.minionId
-                  ? !proposal.willGrow
-                  : ownerProposal && ownerMinion.status === 'alive'
-                    ? !ownerWillGrow
-                    : false;
-
-              if (occupant.minionId === proposal.minionId) {
-                if (!(occupant.segmentIndex === ownerTailIndex && ownerTailWillVacate)) {
-                  proposal.blocked = true;
-                  proposal.bodyCollision = true;
-                  break;
-                }
-                continue;
-              }
-
-              if (occupant.segmentIndex !== ownerTailIndex || !ownerTailWillVacate) {
-                proposal.blocked = true;
-                proposal.bodyCollision = true;
-                break;
-              }
-            }
-          }
-
-          proposalById.set(proposal.minionId, proposal);
-        }
-
-        for (let i = 0; i < proposals.length; i += 1) {
-          const outer = proposals[i];
-          if (outer.blocked) continue;
-          const outerKey = getCellKey(outer.nextHead.col, outer.nextHead.row);
-          for (let j = i + 1; j < proposals.length; j += 1) {
-            const inner = proposals[j];
-            if (inner.blocked) continue;
-            const innerKey = getCellKey(inner.nextHead.col, inner.nextHead.row);
-            if (innerKey === outerKey) {
-              outer.blocked = true;
-              outer.headCollision = true;
-              inner.blocked = true;
-              inner.headCollision = true;
+        let blocked = false;
+        let deathReason = null;
+        if (wallCollision) {
+          blocked = true;
+          deathReason = 'wall';
+        } else {
+          const occupantIndex = occupancy.get(getCellKey(nextHead.col, nextHead.row));
+          if (occupantIndex !== undefined) {
+            const tailIndex = state.snake.segments.length - 1;
+            const isTailCell = occupantIndex === tailIndex;
+            const tailWillVacate = !willGrow;
+            if (!(isTailCell && tailWillVacate)) {
+              blocked = true;
+              deathReason = 'body';
             }
           }
         }
 
-        const nextMinionSlices = state.minions.map((minion) => {
-          const proposal = proposalById.get(minion.id);
-          if (!proposal) {
-            return minion;
-          }
-
-          if (proposal.blocked) {
-            return {
-              ...minion,
-              status: 'dead',
-              deathReason: proposal.wallCollision
-                ? 'wall'
-                : proposal.headCollision
-                  ? 'head'
-                  : 'body',
-              queuedDirection: minion.direction
-            };
-          }
-
-          const nextSegments = cloneSegments(minion.segments);
-          nextSegments.unshift(proposal.nextHead);
-          let growthQueued = minion.growthQueued;
-
-          if (proposal.willGrow) {
-            growthQueued += growthPerItem;
-          }
-
-          if (growthQueued > 0) {
-            growthQueued -= 1;
-          } else {
-            nextSegments.pop();
-          }
-
-          return {
-            ...minion,
-            status: 'alive',
-            direction: proposal.direction,
-            queuedDirection: proposal.direction,
-            segments: nextSegments,
-            growthQueued,
-            score: proposal.willGrow ? minion.score + 1 : minion.score,
-            deathReason: null
+        if (blocked) {
+          state.snake = {
+            ...state.snake,
+            status: 'dead',
+            deathReason,
+            queuedDirection: state.snake.direction
           };
-        });
+          state.status = 'gameOver';
+          commitRunSummary('step-end');
+          pauseButtonsAfterEnd();
+          return;
+        }
 
-        const itemConsumed = proposals.some((proposal) => proposal.willGrow && !proposal.blocked);
-        state.minions = nextMinionSlices;
+        const nextSegments = cloneSegments(state.snake.segments);
+        nextSegments.unshift(nextHead);
 
-        if (itemConsumed) {
+        let growthQueued = state.snake.growthQueued;
+        if (willGrow) {
+          growthQueued += growthPerItem;
           state.score += 1;
+          state.snake.score += 1;
+        }
+
+        if (growthQueued > 0) {
+          growthQueued -= 1;
+        } else {
+          nextSegments.pop();
+        }
+
+        state.snake = {
+          ...state.snake,
+          direction: nextDirection,
+          queuedDirection: nextDirection,
+          segments: nextSegments,
+          growthQueued,
+          status: 'alive',
+          deathReason: null
+        };
+
+        if (willGrow) {
           const blocked = buildBlockedCells();
           const spawn = pickSpawn(state.world.seed, blocked);
           state.world.item = spawn.item;
@@ -935,23 +807,11 @@
 
         state.phase += 0.01;
 
-        const anyAlive = state.minions.some((minion) => minion.status === 'alive');
-        if (!anyAlive) {
-          state.status = 'gameOver';
-          commitRunSummary('step-end');
-          pauseButtonsAfterEnd();
-          return;
-        }
-
         if (state.world.item === null) {
           state.status = 'won';
           commitRunSummary('step-end');
           pauseButtonsAfterEnd();
           return;
-        }
-
-        if (!getControlledMinion()) {
-          state.controlledMinionId = 0;
         }
       }
 
@@ -1127,7 +987,11 @@
         const isDead = minion.status !== 'alive';
         for (let index = minion.segments.length - 1; index >= 0; index--) {
           const segment = minion.segments[index];
-          drawMinionSegment(segment.col, segment.row, state.phase + index * 0.08, index === 0, minion.colors, isDead);
+          const tone = index % 2 === 0 ? minion.colors.body : minion.colors.bodyAlt;
+          drawMinionSegment(segment.col, segment.row, state.phase + index * 0.08, index === 0, {
+            ...minion.colors,
+            body: tone
+          }, isDead);
         }
       }
 
@@ -1150,19 +1014,14 @@
         ctx.strokeRect(x, y, boardWidth, boardHeight);
 
         drawCellGrid();
-        for (const minion of state.minions) {
-          drawMinion(minion);
+        if (state.snake) {
+          drawMinion(state.snake);
         }
         drawItem();
-
-        const active = getControlledMinion();
-        const aliveCount = state.minions.filter((minion) => minion.status === 'alive').length;
         ctx.fillStyle = 'rgba(240, 247, 255, 0.92)';
         ctx.font = `${Math.max(12, layout.cellSize * 0.28)}px 'Trebuchet MS', 'Segoe UI', system-ui`;
-        ctx.fillText(`Alive: ${aliveCount}/${state.minions.length}`, x + 6, y + boardHeight - 6);
-        if (active) {
-          ctx.fillText(`Active: M${active.id + 1}`, x + boardWidth - 74, y + boardHeight - 6);
-        }
+        const length = state.snake ? state.snake.segments.length : 0;
+        ctx.fillText(`Minion length: ${length}`, x + 6, y + boardHeight - 6);
       }
 
       function updateHud() {
@@ -1170,7 +1029,7 @@
         timerEl.textContent = (state.timerMs / 1000).toFixed(1);
 
         if (state.status === 'gameOver') {
-          hint.textContent = 'All minions died. Press Reset to start again.';
+          hint.textContent = 'The minion crashed. Press Reset to start again.';
           return;
         }
 
@@ -1180,14 +1039,11 @@
         }
 
         if (state.status === 'running') {
-          const statuses = state.minions
-            .map((minion) => `M${minion.id + 1}:${minion.status}`)
-            .join(' | ');
-          hint.textContent = `Use arrows/WASD or tap to steer the active minion. ${statuses}`;
+          hint.textContent = 'Use arrows/WASD or tap to steer the snake.';
           return;
         }
 
-        hint.textContent = 'Press Start to begin. Tab cycles active minion.';
+        hint.textContent = 'Press Start to begin.';
       }
 
       function cellFromPointer(event) {
@@ -1212,10 +1068,9 @@
       function handleDirectionFromPointer(event) {
         if (state.status !== 'running') return;
 
-        const active = getControlledMinion();
-        if (!active) return;
+        if (!state.snake || state.snake.status !== 'alive') return;
 
-        const head = active.segments[0];
+        const head = state.snake.segments[0];
         const target = cellFromPointer(event);
         if (!target || !head) return;
 
@@ -1236,14 +1091,6 @@
         if (requested) {
           event.preventDefault();
           setDirection(requested);
-          return;
-        }
-
-        if (event.key === 'Tab') {
-          event.preventDefault();
-          cycleControlledMinion();
-          updateHud();
-          drawBoard();
           return;
         }
 
