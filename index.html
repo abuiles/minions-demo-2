@@ -6,9 +6,19 @@
   <title>Minions Demo 2</title>
   <style>
     :root {
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      color: #fefefe;
-      background-color: #050a1a;
+      --bg: #050d1f;
+      --panel: #0b1531;
+      --line: #7f95ff;
+      --panel-border: #6b82fb;
+      --text: #f2f7ff;
+      --muted: #a6bcff;
+      --accent: #9cf2ff;
+      --cell: rgba(255, 255, 255, 0.07);
+      --head: #f6df6a;
+      --body: #4f9cf4;
+      font-family: 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at 50% 0, #0f1e43, #050d1f 55%, #040914 100%);
     }
 
     body {
@@ -29,46 +39,61 @@
     h1 {
       margin: 0;
       font-size: 2rem;
-      letter-spacing: 0.06em;
+      letter-spacing: 0.05em;
     }
 
     p {
       margin: 0.25rem 0 0;
-      color: #a0b3ff;
+      color: var(--muted);
     }
 
     main {
-      width: min(600px, 100%);
+      width: min(680px, 100%);
       display: flex;
       flex-direction: column;
       gap: 1rem;
+      align-items: center;
     }
 
     #game-frame {
       position: relative;
-      background: linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.5));
-      border: 2px solid #6478ff;
+      width: min(640px, min(92vw, 94vh));
+      aspect-ratio: 1 / 1;
+      background: linear-gradient(150deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.6));
+      border: 2px solid var(--panel-border);
       border-radius: 0.75rem;
-      padding: 1rem;
-      min-height: 320px;
       overflow: hidden;
+      box-shadow: 0 20px 30px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+      touch-action: none;
     }
 
-    #target {
+    #game-frame::before {
+      content: '';
       position: absolute;
-      width: 48px;
-      height: 48px;
-      border-radius: 50%;
-      background: radial-gradient(circle, #ffe100, #ffb347);
-      box-shadow: 0 0 12px 3px rgba(255, 177, 71, 0.8);
+      inset: 0.65rem;
+      border: 1px dashed rgba(255, 255, 255, 0.15);
+      border-radius: 0.55rem;
+      pointer-events: none;
+    }
+
+    #boardCanvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
       cursor: pointer;
     }
 
     .hud {
+      color: var(--text);
+    }
+
+    .hud-row {
       display: flex;
       justify-content: space-between;
       font-size: 1.2rem;
-      color: #fefefe;
+      color: var(--text);
       border-bottom: 1px solid rgba(255, 255, 255, 0.15);
       padding-bottom: 0.25rem;
     }
@@ -87,8 +112,9 @@
       border: none;
       border-radius: 0.5rem;
       font-weight: 600;
-      background: #6478ff;
-      color: #fff;
+      background: linear-gradient(180deg, #7a90ff, #6478ff);
+      color: var(--text);
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2) inset;
       transition: transform 0.1s ease, box-shadow 0.2s ease;
     }
 
@@ -105,7 +131,7 @@
     footer {
       margin-top: 2rem;
       text-align: center;
-      color: #7ea7ff;
+      color: #9aafff;
       font-size: 0.9rem;
     }
   </style>
@@ -113,16 +139,21 @@
 <body>
   <header>
     <h1>Minions Demo 2</h1>
-    <p>Frontend-only prototype: tap glowing targets and keep the streak alive.</p>
+    <p>Frontend-only board demo: tap the minion to score.</p>
   </header>
   <main>
     <div id="game-frame">
-      <div id="target" aria-label="game target" role="button"></div>
+      <canvas id="boardCanvas"></canvas>
     </div>
 
     <div class="hud">
+      <p id="hint" style="margin: 0 0 0.45rem; color: var(--muted)">
+        Grid at target resolution with crisp cells for desktop and mobile.
+      </p>
+      <div class="hud-row">
       <span>Score: <strong id="score">0</strong></span>
       <span>Time: <strong id="timer">0.0</strong>s</span>
+      </div>
     </div>
 
     <div class="controls">
@@ -137,29 +168,236 @@
   <script>
     (function () {
       const frame = document.getElementById('game-frame');
-      const target = document.getElementById('target');
+      const canvas = document.getElementById('boardCanvas');
+      const ctx = canvas.getContext('2d');
       const startBtn = document.getElementById('start');
       const pauseBtn = document.getElementById('pause');
       const resetBtn = document.getElementById('reset');
       const scoreEl = document.getElementById('score');
       const timerEl = document.getElementById('timer');
 
+      const board = {
+        cols: 12,
+        rows: 12
+      };
+
+      const minion = {
+        col: 5,
+        row: 5,
+        phase: 0
+      };
+
       let score = 0;
       let running = false;
       let timer = 0;
-      let intervalId = null;
+      let lastFrameMs = 0;
+      let animationId = null;
 
-      function placeTarget() {
+      let layout = null;
+
+      function measureLayout() {
         const { width, height } = frame.getBoundingClientRect();
-        const padding = 20;
-        const x = Math.random() * (width - padding * 2) + padding;
-        const y = Math.random() * (height - padding * 2) + padding;
-        target.style.transform = `translate(${x}px, ${y}px)`;
+        const dpr = window.devicePixelRatio || 1;
+
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        canvas.width = Math.floor(width * dpr);
+        canvas.height = Math.floor(height * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        const inset = 24;
+        const boardPx = Math.max(1, Math.min(width, height) - inset * 2);
+        const rawCell = Math.floor(boardPx / Math.max(board.cols, board.rows));
+        const cellSize = Math.max(8, rawCell);
+        const boardWidth = cellSize * board.cols;
+        const boardHeight = cellSize * board.rows;
+
+        layout = {
+          width,
+          height,
+          cellSize,
+          boardWidth,
+          boardHeight,
+          x: Math.round((width - boardWidth) / 2),
+          y: Math.round((height - boardHeight) / 2)
+        };
+
+        drawBoard();
       }
 
-      function updateTimer() {
-        timer += 0.1;
-        timerEl.textContent = timer.toFixed(1);
+      function pointInMinion(x, y) {
+        if (!layout) return false;
+
+        const { cellSize, x: ox, y: oy } = layout;
+        const c = ox + (minion.col + 0.5) * cellSize;
+        const r = oy + (minion.row + 0.5) * cellSize;
+        const jitter = Math.sin(minion.phase) * (cellSize * 0.06);
+
+        const headRadius = cellSize * 0.29;
+        const headX = c;
+        const headY = r - cellSize * 0.22 + jitter * 0.35;
+        const bodyTop = r + jitter;
+        const bodyWidth = cellSize * 0.46;
+        const bodyHeight = cellSize * 0.54;
+        const bodyLeft = c - bodyWidth / 2;
+
+        const inHead =
+          (x - headX) ** 2 + (y - headY) ** 2 <= headRadius ** 2;
+
+        const inBody =
+          x >= bodyLeft &&
+          x <= bodyLeft + bodyWidth &&
+          y >= bodyTop &&
+          y <= bodyTop + bodyHeight;
+
+        return inHead || inBody;
+      }
+
+      function drawCellGrid() {
+        const { x, y, cellSize } = layout;
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+        ctx.lineWidth = 1;
+
+        for (let col = 0; col <= board.cols; col++) {
+          const px = x + col * cellSize;
+          ctx.beginPath();
+          ctx.moveTo(px, y);
+          ctx.lineTo(px, y + board.rows * cellSize);
+          ctx.stroke();
+        }
+
+        for (let row = 0; row <= board.rows; row++) {
+          const py = y + row * cellSize;
+          ctx.beginPath();
+          ctx.moveTo(x, py);
+          ctx.lineTo(x + board.cols * cellSize, py);
+          ctx.stroke();
+        }
+
+        for (let row = 0; row < board.rows; row++) {
+          for (let col = 0; col < board.cols; col++) {
+            if ((row + col) % 2 === 0) {
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+            } else {
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.18)';
+            }
+            ctx.fillRect(
+              x + col * cellSize,
+              y + row * cellSize,
+              cellSize,
+              cellSize
+            );
+          }
+        }
+      }
+
+      function drawMinion() {
+        const { cellSize, x, y } = layout;
+        const baseX = x + (minion.col + 0.5) * cellSize;
+        const baseY = y + (minion.row + 0.5) * cellSize;
+        const jitter = Math.sin(minion.phase) * (cellSize * 0.06);
+
+        // Body
+        const bodyWidth = cellSize * 0.46;
+        const bodyHeight = cellSize * 0.54;
+        const bodyX = baseX - bodyWidth / 2;
+        const bodyY = baseY - 0.05 * cellSize + jitter;
+        const bodyRadius = bodyWidth * 0.3;
+        const bodyBottom = bodyY + bodyHeight;
+
+        ctx.fillStyle = 'var(--body)';
+        ctx.beginPath();
+        roundRect(bodyX, bodyY, bodyWidth, bodyHeight, bodyRadius);
+        ctx.fill();
+
+        // Head
+        const headRadius = cellSize * 0.29;
+        const headX = baseX;
+        const headY = baseY - cellSize * 0.22 + jitter * 0.35;
+        ctx.fillStyle = 'var(--head)';
+        ctx.beginPath();
+        ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Distinction detail: head strap and body overall lines
+        ctx.strokeStyle = '#d4ad2c';
+        ctx.lineWidth = Math.max(2, cellSize * 0.05);
+        ctx.beginPath();
+        ctx.arc(headX, headY, headRadius - 1, -Math.PI * 0.75, Math.PI * 0.75);
+        ctx.stroke();
+
+        // Eyes and glasses band
+        const eyeGap = cellSize * 0.09;
+        const eyeY = headY - cellSize * 0.05;
+        const eyeRadius = cellSize * 0.045;
+        ctx.fillStyle = '#1a2233';
+        ctx.beginPath();
+        ctx.arc(headX - eyeGap, eyeY, eyeRadius, 0, Math.PI * 2);
+        ctx.arc(headX + eyeGap, eyeY, eyeRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Body separation line to make head/body visually distinct
+        ctx.strokeStyle = '#cce5ff';
+        ctx.lineWidth = Math.max(2, cellSize * 0.035);
+        ctx.beginPath();
+        ctx.moveTo(baseX - bodyWidth / 2, baseY + jitter * 0.2);
+        ctx.lineTo(baseX + bodyWidth / 2, baseY + jitter * 0.2);
+        ctx.stroke();
+
+        // Feet indicators
+        const footY = bodyBottom + cellSize * 0.11;
+        const footW = bodyWidth * 0.25;
+        const footH = cellSize * 0.06;
+        ctx.fillStyle = '#e2be5a';
+        ctx.fillRect(baseX - bodyWidth * 0.26, footY, footW, footH);
+        ctx.fillRect(baseX + bodyWidth * 0.01, footY, footW, footH);
+      }
+
+      function roundRect(x, y, width, height, radius) {
+        const r = Math.min(radius, width / 2, height / 2);
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + width, y, x + width, y + height, r);
+        ctx.arcTo(x + width, y + height, x, y + height, r);
+        ctx.arcTo(x, y + height, x, y, r);
+        ctx.arcTo(x, y, x + width, y, r);
+      }
+
+      function drawBoard() {
+        if (!layout) return;
+
+        ctx.clearRect(0, 0, layout.width, layout.height);
+        ctx.fillStyle = 'rgba(3, 7, 25, 0.95)';
+        ctx.fillRect(0, 0, layout.width, layout.height);
+
+        const { x, y, boardWidth, boardHeight } = layout;
+        const border = 'rgba(255, 255, 255, 0.18)';
+
+        // Board background
+        ctx.fillStyle = 'var(--panel)';
+        ctx.fillRect(x - 3, y - 3, boardWidth + 6, boardHeight + 6);
+        ctx.fillStyle = 'rgba(3, 11, 33, 0.95)';
+        ctx.fillRect(x, y, boardWidth, boardHeight);
+        ctx.strokeStyle = border;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, boardWidth, boardHeight);
+
+        drawCellGrid();
+        drawMinion();
+      }
+
+      function loop(ts) {
+        if (!lastFrameMs) lastFrameMs = ts;
+        const delta = (ts - lastFrameMs) / 1000;
+        lastFrameMs = ts;
+
+        if (running) {
+          timer += delta;
+          minion.phase += delta * 8;
+          timerEl.textContent = timer.toFixed(1);
+          drawBoard();
+        }
+
+        animationId = requestAnimationFrame(loop);
       }
 
       function startGame() {
@@ -168,15 +406,18 @@
         startBtn.disabled = true;
         pauseBtn.disabled = false;
         resetBtn.disabled = false;
-        intervalId = setInterval(updateTimer, 100);
-        placeTarget();
       }
 
       function pauseGame() {
         running = false;
         startBtn.disabled = false;
         pauseBtn.disabled = true;
-        clearInterval(intervalId);
+      }
+
+      function moveMinionRandomly() {
+        minion.col = 1 + Math.floor(Math.random() * (board.cols - 2));
+        minion.row = 1 + Math.floor(Math.random() * (board.rows - 2));
+        minion.phase = Math.random() * Math.PI * 2;
       }
 
       function resetGame() {
@@ -184,27 +425,40 @@
         startBtn.disabled = false;
         pauseBtn.disabled = true;
         resetBtn.disabled = true;
-        clearInterval(intervalId);
         timer = 0;
         score = 0;
         scoreEl.textContent = score;
         timerEl.textContent = '0.0';
-        target.style.transform = 'translate(-100px, -100px)';
+        minion.col = 5;
+        minion.row = 5;
+        minion.phase = 0;
+        drawBoard();
       }
 
-      target.addEventListener('click', () => {
+      function handlePointerDown(event) {
         if (!running) return;
-        score += 10;
-        scoreEl.textContent = score;
-        placeTarget();
-      });
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+
+        if (pointInMinion(x, y)) {
+          score += 1;
+          scoreEl.textContent = score;
+          moveMinionRandomly();
+        }
+      }
+
+      canvas.addEventListener('pointerdown', handlePointerDown);
 
       startBtn.addEventListener('click', startGame);
       pauseBtn.addEventListener('click', pauseGame);
       resetBtn.addEventListener('click', resetGame);
+      window.addEventListener('resize', measureLayout);
 
-      // Ensure target is hidden until game begins
+      // Initialize renderer and game state
       resetGame();
+      measureLayout();
+      requestAnimationFrame(loop);
     })();
   </script>
 </body>
