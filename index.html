@@ -148,7 +148,7 @@
 
     <div class="hud">
       <p id="hint" style="margin: 0 0 0.45rem; color: var(--muted)">
-        Press Start to enter the deterministic snake-style loop.
+        Press Start to enter the deterministic multi-minion loop.
       </p>
       <div class="hud-row">
       <span>Score: <strong id="score">0</strong></span>
@@ -183,7 +183,39 @@
       const lcgMultiplier = 1664525;
       const lcgIncrement = 1013904223;
       const initialSeed = 0xdecafbad >>> 0;
-      const initialDirection = 'right';
+
+      const minionsConfig = [
+        {
+          id: 0,
+          direction: 'right',
+          segments: [
+            { col: 2, row: 2 },
+            { col: 1, row: 2 },
+            { col: 0, row: 2 }
+          ],
+          colors: { body: '#4f9cf4', head: '#f6df6a', accent: '#cce5ff' }
+        },
+        {
+          id: 1,
+          direction: 'left',
+          segments: [
+            { col: 9, row: 9 },
+            { col: 10, row: 9 },
+            { col: 11, row: 9 }
+          ],
+          colors: { body: '#74e7bf', head: '#f6f0a5', accent: '#ffffff' }
+        },
+        {
+          id: 2,
+          direction: 'down',
+          segments: [
+            { col: 6, row: 0 },
+            { col: 6, row: 1 },
+            { col: 6, row: 2 }
+          ],
+          colors: { body: '#ffb26a', head: '#f6df6a', accent: '#f7dca3' }
+        }
+      ];
 
       const directions = {
         up: { dx: 0, dy: -1 },
@@ -211,16 +243,15 @@
         status: 'idle',
         score: 0,
         timerMs: 0,
-        frameAccumulator: 0,
         tickAccumulator: 0,
-        direction: initialDirection,
-        queuedDirection: initialDirection,
-        snake: [],
-        growthQueued: 0,
-        seed: initialSeed,
-        item: null,
+        world: {
+          item: null,
+          seed: initialSeed
+        },
         phase: 0,
-        lastFrameTs: 0
+        lastFrameTs: 0,
+        minions: [],
+        controlledMinionId: 0
       };
 
       let layout = null;
@@ -229,7 +260,7 @@
         return (Math.imul(seed, lcgMultiplier) + lcgIncrement) >>> 0;
       }
 
-      function keyFromCell(col, row) {
+      function getCellKey(col, row) {
         return `${col}:${row}`;
       }
 
@@ -244,12 +275,12 @@
         return requested;
       }
 
-      function occupiedBySnake(snake) {
-        const blocked = new Set();
-        for (const segment of snake) {
-          blocked.add(keyFromCell(segment.col, segment.row));
-        }
-        return blocked;
+      function cloneSegments(segments) {
+        return segments.map(({ col, row }) => ({ col, row }));
+      }
+
+      function isSameCell(a, b) {
+        return a.col === b.col && a.row === b.row;
       }
 
       function pickSpawn(seed, blockedCells) {
@@ -266,7 +297,7 @@
           const col = nextSeed % board.cols;
           nextSeed = stepRng(nextSeed);
           const row = nextSeed % board.rows;
-          const candidate = keyFromCell(col, row);
+          const candidate = getCellKey(col, row);
           if (!blockedCells.has(candidate)) {
             spawn = { col, row };
             break;
@@ -274,10 +305,9 @@
         }
 
         if (!spawn) {
-          // Deterministic fallback scan when pseudo-random path is exhausted.
           for (let row = 0; row < board.rows; row += 1) {
             for (let col = 0; col < board.cols; col += 1) {
-              const candidate = keyFromCell(col, row);
+              const candidate = getCellKey(col, row);
               if (!blockedCells.has(candidate)) {
                 spawn = { col, row };
                 break;
@@ -290,33 +320,83 @@
         return { item: spawn, nextSeed };
       }
 
-      function isSameCell(a, b) {
-        return a.col === b.col && a.row === b.row;
+      function buildOccupancy() {
+        const occupancy = new Map();
+        for (const minion of state.minions) {
+          for (let index = 0; index < minion.segments.length; index += 1) {
+            const segment = minion.segments[index];
+            const key = getCellKey(segment.col, segment.row);
+            const bucket = occupancy.get(key);
+            if (bucket) {
+              bucket.push({ minionId: minion.id, segmentIndex: index });
+            } else {
+              occupancy.set(key, [{ minionId: minion.id, segmentIndex: index }]);
+            }
+          }
+        }
+        return occupancy;
+      }
+
+      function buildBlockedCells() {
+        const blocked = new Set();
+        for (const minion of state.minions) {
+          for (const segment of minion.segments) {
+            blocked.add(getCellKey(segment.col, segment.row));
+          }
+        }
+        return blocked;
+      }
+
+      function createFreshMinion(config) {
+        return {
+          id: config.id,
+          status: 'alive',
+          direction: config.direction,
+          queuedDirection: config.direction,
+          segments: cloneSegments(config.segments),
+          growthQueued: 0,
+          score: 0,
+          deathReason: null,
+          colors: config.colors
+        };
+      }
+
+      function getControlledMinion() {
+        for (let offset = 0; offset < state.minions.length; offset += 1) {
+          const minion = state.minions[(state.controlledMinionId + offset) % state.minions.length];
+          if (minion.status === 'alive') return minion;
+        }
+        return null;
+      }
+
+      function cycleControlledMinion() {
+        if (!state.minions.length) return;
+        const len = state.minions.length;
+        for (let i = 1; i <= len; i += 1) {
+          const idx = (state.controlledMinionId + i) % len;
+          if (state.minions[idx].status === 'alive') {
+            state.controlledMinionId = idx;
+            return;
+          }
+        }
       }
 
       function resetState() {
         state.status = 'idle';
         state.score = 0;
         state.timerMs = 0;
-        state.frameAccumulator = 0;
         state.tickAccumulator = 0;
-        state.direction = initialDirection;
-        state.queuedDirection = initialDirection;
-        state.growthQueued = 0;
-        state.seed = initialSeed;
+        state.world.item = null;
+        state.world.seed = initialSeed;
         state.phase = 0;
         state.lastFrameTs = 0;
+        state.controlledMinionId = 0;
+        state.minions = minionsConfig.map(createFreshMinion);
 
-        state.snake = [
-          { col: 5, row: 5 },
-          { col: 4, row: 5 },
-          { col: 3, row: 5 }
-        ];
-
-        const blocked = occupiedBySnake(state.snake);
-        const spawn = pickSpawn(state.seed, blocked);
-        state.item = spawn.item;
-        state.seed = spawn.nextSeed;
+        const blocked = buildBlockedCells();
+        const spawn = pickSpawn(state.world.seed, blocked);
+        state.world.item = spawn.item;
+        state.world.seed = spawn.nextSeed;
 
         startBtn.disabled = false;
         pauseBtn.disabled = true;
@@ -332,66 +412,201 @@
 
       function setDirection(intent) {
         if (!intent || !directions[intent]) return;
+        const active = getControlledMinion();
+        if (!active) return;
         if (state.status === 'gameOver' || state.status === 'won') return;
-        state.queuedDirection = intent;
+        active.queuedDirection = intent;
       }
 
       function step() {
         if (state.status !== 'running') return;
 
-        state.direction = nextDirectionFromInput(state.direction, state.queuedDirection);
-        const move = directions[state.direction];
-        const head = state.snake[0];
-        const nextHead = {
-          col: head.col + move.dx,
-          row: head.row + move.dy
-        };
+        const occupancy = buildOccupancy();
+        const proposals = [];
+        const aliveMinions = state.minions.filter((minion) => minion.status === 'alive');
+        const minionsById = new Map(state.minions.map((minion) => [minion.id, minion]));
 
-        const hitWall =
-          nextHead.col < 0 ||
-          nextHead.row < 0 ||
-          nextHead.col >= board.cols ||
-          nextHead.row >= board.rows;
+        for (const minion of aliveMinions) {
+          const nextDirection = nextDirectionFromInput(minion.direction, minion.queuedDirection);
+          const move = directions[nextDirection];
+          const head = minion.segments[0];
+          const nextHead = {
+            col: head.col + move.dx,
+            row: head.row + move.dy
+          };
 
-        const bodyForSelfCollision =
-          state.growthQueued > 0 ? state.snake : state.snake.slice(0, -1);
+          const wallCollision =
+            nextHead.col < 0 ||
+            nextHead.row < 0 ||
+            nextHead.col >= board.cols ||
+            nextHead.row >= board.rows;
 
-        const hitSelf = bodyForSelfCollision.some((segment) => isSameCell(segment, nextHead));
+          proposals.push({
+            minionId: minion.id,
+            minion,
+            direction: nextDirection,
+            nextHead,
+            willGrow: false,
+            wallCollision,
+            blocked: false,
+            headCollision: false,
+            bodyCollision: false
+          });
+        }
 
-        if (hitWall || hitSelf) {
+        const itemClaimants = proposals
+          .filter((proposal) => !proposal.wallCollision && state.world.item && isSameCell(proposal.nextHead, state.world.item))
+          .map((proposal) => proposal.minionId);
+
+        const itemWinnerId = itemClaimants[0] ?? null;
+
+        const proposalById = new Map();
+        for (const proposal of proposals) {
+          if (state.world.item && isSameCell(proposal.nextHead, state.world.item) && proposal.minionId === itemWinnerId) {
+            proposal.willGrow = true;
+          }
+
+          if (proposal.wallCollision) {
+            proposal.blocked = true;
+            proposal.bodyCollision = true;
+            proposalById.set(proposal.minionId, proposal);
+            continue;
+          }
+
+          const key = getCellKey(proposal.nextHead.col, proposal.nextHead.row);
+          const occupants = occupancy.get(key);
+          const selfMinion = proposal.minion;
+          const selfTail = selfMinion.segments[selfMinion.segments.length - 1];
+          const selfTailIsHead = selfMinion.segments.length === 1;
+
+          if (occupants) {
+            for (const occupant of occupants) {
+              const ownerMinion = minionsById.get(occupant.minionId);
+              if (!ownerMinion) continue;
+
+              const ownerSegments = ownerMinion.segments;
+              const ownerTail = ownerSegments[ownerSegments.length - 1];
+              const ownerTailIndex = ownerSegments.length - 1;
+              const ownerProposal = proposalById.get(occupant.minionId);
+              const ownerWillGrow = ownerProposal ? ownerProposal.willGrow : false;
+              const ownerTailWillVacate =
+                occupant.minionId === proposal.minionId
+                  ? !proposal.willGrow
+                  : ownerProposal && ownerMinion.status === 'alive'
+                    ? !ownerWillGrow
+                    : false;
+
+              if (occupant.minionId === proposal.minionId) {
+                if (!(occupant.segmentIndex === ownerTailIndex && ownerTailWillVacate)) {
+                  proposal.blocked = true;
+                  proposal.bodyCollision = true;
+                  break;
+                }
+                continue;
+              }
+
+              if (occupant.segmentIndex !== ownerTailIndex || !ownerTailWillVacate) {
+                proposal.blocked = true;
+                proposal.bodyCollision = true;
+                break;
+              }
+            }
+          }
+
+          proposalById.set(proposal.minionId, proposal);
+        }
+
+        for (let i = 0; i < proposals.length; i += 1) {
+          const outer = proposals[i];
+          if (outer.blocked) continue;
+          const outerKey = getCellKey(outer.nextHead.col, outer.nextHead.row);
+          for (let j = i + 1; j < proposals.length; j += 1) {
+            const inner = proposals[j];
+            if (inner.blocked) continue;
+            const innerKey = getCellKey(inner.nextHead.col, inner.nextHead.row);
+            if (innerKey === outerKey) {
+              outer.blocked = true;
+              outer.headCollision = true;
+              inner.blocked = true;
+              inner.headCollision = true;
+            }
+          }
+        }
+
+        const nextMinionSlices = state.minions.map((minion) => {
+          const proposal = proposalById.get(minion.id);
+          if (!proposal) {
+            return minion;
+          }
+
+          if (proposal.blocked) {
+            return {
+              ...minion,
+              status: 'dead',
+              deathReason: proposal.wallCollision
+                ? 'wall'
+                : proposal.headCollision
+                  ? 'head'
+                  : 'body',
+              queuedDirection: minion.direction
+            };
+          }
+
+          const nextSegments = cloneSegments(minion.segments);
+          nextSegments.unshift(proposal.nextHead);
+          let growthQueued = minion.growthQueued;
+
+          if (proposal.willGrow) {
+            growthQueued += growthPerItem;
+          }
+
+          if (growthQueued > 0) {
+            growthQueued -= 1;
+          } else {
+            nextSegments.pop();
+          }
+
+          return {
+            ...minion,
+            status: 'alive',
+            direction: proposal.direction,
+            queuedDirection: proposal.direction,
+            segments: nextSegments,
+            growthQueued,
+            score: proposal.willGrow ? minion.score + 1 : minion.score,
+            deathReason: null
+          };
+        });
+
+        const itemConsumed = proposals.some((proposal) => proposal.willGrow && !proposal.blocked);
+        state.minions = nextMinionSlices;
+
+        if (itemConsumed) {
+          state.score += 1;
+          const blocked = buildBlockedCells();
+          const spawn = pickSpawn(state.world.seed, blocked);
+          state.world.item = spawn.item;
+          state.world.seed = spawn.nextSeed;
+        }
+
+        state.phase += 0.01;
+
+        const anyAlive = state.minions.some((minion) => minion.status === 'alive');
+        if (!anyAlive) {
           state.status = 'gameOver';
           pauseButtonsAfterEnd();
           return;
         }
 
-        state.snake.unshift(nextHead);
-
-        let growthQueued = state.growthQueued;
-        const didPickup = state.item && isSameCell(nextHead, state.item);
-
-        if (didPickup) {
-          growthQueued += growthPerItem;
-          state.score += 1;
-
-          const blocked = occupiedBySnake(state.snake);
-          const spawn = pickSpawn(state.seed, blocked);
-          state.item = spawn.item;
-          state.seed = spawn.nextSeed;
-
-          if (!state.item) {
-            state.status = 'won';
-            pauseButtonsAfterEnd();
-          }
+        if (state.world.item === null) {
+          state.status = 'won';
+          pauseButtonsAfterEnd();
+          return;
         }
 
-        if (growthQueued > 0) {
-          growthQueued -= 1;
-        } else {
-          state.snake.pop();
+        if (!getControlledMinion()) {
+          state.controlledMinionId = 0;
         }
-
-        state.growthQueued = growthQueued;
-        state.queuedDirection = state.direction;
       }
 
       function measureLayout() {
@@ -471,11 +686,15 @@
         ctx.arcTo(x, y, x + width, y, r);
       }
 
-      function drawMinionSegment(col, row, phase, isHead) {
+      function drawMinionSegment(col, row, phase, isHead, palette, isDead) {
         const { x, y, cellSize } = layout;
         const baseX = x + (col + 0.5) * cellSize;
         const baseY = y + (row + 0.5) * cellSize;
         const jitter = Math.sin(phase) * (cellSize * 0.06);
+
+        const bodyColor = isDead ? 'rgba(120, 140, 160, 0.7)' : palette.body;
+        const headColor = isDead ? 'rgba(170, 176, 190, 0.7)' : palette.head;
+        const accentColor = isDead ? '#93a0b0' : palette.accent;
 
         if (isHead) {
           const bodyWidth = cellSize * 0.46;
@@ -485,7 +704,7 @@
           const bodyRadius = bodyWidth * 0.3;
           const bodyBottom = bodyY + bodyHeight;
 
-          ctx.fillStyle = 'var(--body)';
+          ctx.fillStyle = bodyColor;
           ctx.beginPath();
           roundRect(bodyX, bodyY, bodyWidth, bodyHeight, bodyRadius);
           ctx.fill();
@@ -493,16 +712,18 @@
           const headRadius = cellSize * 0.29;
           const headX = baseX;
           const headY = baseY - cellSize * 0.22 + jitter * 0.35;
-          ctx.fillStyle = 'var(--head)';
+          ctx.fillStyle = headColor;
           ctx.beginPath();
           ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
           ctx.fill();
 
-          ctx.strokeStyle = '#d4ad2c';
-          ctx.lineWidth = Math.max(2, cellSize * 0.05);
-          ctx.beginPath();
-          ctx.arc(headX, headY, headRadius - 1, -Math.PI * 0.75, Math.PI * 0.75);
-          ctx.stroke();
+          if (!isDead) {
+            ctx.strokeStyle = '#d4ad2c';
+            ctx.lineWidth = Math.max(2, cellSize * 0.05);
+            ctx.beginPath();
+            ctx.arc(headX, headY, headRadius - 1, -Math.PI * 0.75, Math.PI * 0.75);
+            ctx.stroke();
+          }
 
           const eyeGap = cellSize * 0.09;
           const eyeY = headY - cellSize * 0.05;
@@ -513,7 +734,7 @@
           ctx.arc(headX + eyeGap, eyeY, eyeRadius, 0, Math.PI * 2);
           ctx.fill();
 
-          ctx.strokeStyle = '#cce5ff';
+          ctx.strokeStyle = accentColor;
           ctx.lineWidth = Math.max(2, cellSize * 0.035);
           ctx.beginPath();
           ctx.moveTo(baseX - bodyWidth / 2, baseY + jitter * 0.2);
@@ -523,25 +744,25 @@
           const footY = bodyBottom + cellSize * 0.11;
           const footW = bodyWidth * 0.25;
           const footH = cellSize * 0.06;
-          ctx.fillStyle = '#e2be5a';
+          ctx.fillStyle = isDead ? 'rgba(120, 100, 60, 0.6)' : '#e2be5a';
           ctx.fillRect(baseX - bodyWidth * 0.26, footY, footW, footH);
           ctx.fillRect(baseX + bodyWidth * 0.01, footY, footW, footH);
           return;
         }
 
         const radius = cellSize * 0.24;
-        ctx.fillStyle = 'rgba(80, 160, 244, 0.94)';
+        ctx.fillStyle = isDead ? 'rgba(100, 125, 170, 0.72)' : 'rgba(80, 160, 244, 0.94)';
         ctx.beginPath();
         ctx.arc(baseX, baseY + jitter * 0.4, radius, 0, Math.PI * 2);
         ctx.fill();
       }
 
       function drawItem() {
-        if (!state.item) return;
+        if (!state.world.item) return;
 
         const { x, y, cellSize } = layout;
-        const cx = x + (state.item.col + 0.5) * cellSize;
-        const cy = y + (state.item.row + 0.5) * cellSize;
+        const cx = x + (state.world.item.col + 0.5) * cellSize;
+        const cy = y + (state.world.item.row + 0.5) * cellSize;
         const pulse = (Math.sin(state.phase * 1.8) + 1) / 2;
         const wobble = cellSize * 0.08 * pulse;
 
@@ -556,13 +777,12 @@
         ctx.fill();
       }
 
-      function drawMinion() {
-        const phase = state.phase;
-        for (let index = state.snake.length - 1; index >= 0; index--) {
-          const segment = state.snake[index];
-          drawMinionSegment(segment.col, segment.row, phase + index * 0.08, index === 0);
+      function drawMinion(minion) {
+        const isDead = minion.status !== 'alive';
+        for (let index = minion.segments.length - 1; index >= 0; index--) {
+          const segment = minion.segments[index];
+          drawMinionSegment(segment.col, segment.row, state.phase + index * 0.08, index === 0, minion.colors, isDead);
         }
-        drawItem();
       }
 
       function drawBoard() {
@@ -584,7 +804,19 @@
         ctx.strokeRect(x, y, boardWidth, boardHeight);
 
         drawCellGrid();
-        drawMinion();
+        for (const minion of state.minions) {
+          drawMinion(minion);
+        }
+        drawItem();
+
+        const active = getControlledMinion();
+        const aliveCount = state.minions.filter((minion) => minion.status === 'alive').length;
+        ctx.fillStyle = 'rgba(240, 247, 255, 0.92)';
+        ctx.font = `${Math.max(12, layout.cellSize * 0.28)}px 'Trebuchet MS', 'Segoe UI', system-ui`;
+        ctx.fillText(`Alive: ${aliveCount}/${state.minions.length}`, x + 6, y + boardHeight - 6);
+        if (active) {
+          ctx.fillText(`Active: M${active.id + 1}`, x + boardWidth - 74, y + boardHeight - 6);
+        }
       }
 
       function updateHud() {
@@ -592,7 +824,7 @@
         timerEl.textContent = (state.timerMs / 1000).toFixed(1);
 
         if (state.status === 'gameOver') {
-          hint.textContent = 'Game over. Press Reset to start again.';
+          hint.textContent = 'All minions died. Press Reset to start again.';
           return;
         }
 
@@ -602,11 +834,14 @@
         }
 
         if (state.status === 'running') {
-          hint.textContent = 'Use arrow keys/WASD or tap a nearby cell to steer.';
+          const statuses = state.minions
+            .map((minion) => `M${minion.id + 1}:${minion.status}`)
+            .join(' | ');
+          hint.textContent = `Use arrows/WASD or tap to steer the active minion. ${statuses}`;
           return;
         }
 
-        hint.textContent = 'Press Start to begin. Growth queue: ' + state.growthQueued;
+        hint.textContent = 'Press Start to begin. Tab cycles active minion.';
       }
 
       function cellFromPointer(event) {
@@ -631,7 +866,10 @@
       function handleDirectionFromPointer(event) {
         if (state.status !== 'running') return;
 
-        const head = state.snake[0];
+        const active = getControlledMinion();
+        if (!active) return;
+
+        const head = active.segments[0];
         const target = cellFromPointer(event);
         if (!target || !head) return;
 
@@ -652,6 +890,14 @@
         if (requested) {
           event.preventDefault();
           setDirection(requested);
+          return;
+        }
+
+        if (event.key === 'Tab') {
+          event.preventDefault();
+          cycleControlledMinion();
+          updateHud();
+          drawBoard();
           return;
         }
 
@@ -704,32 +950,22 @@
         state.phase += (deltaMs / 1000) * 8;
 
         if (state.status === 'running' || state.status === 'paused') {
-          state.frameAccumulator += deltaMs;
-        }
-
-        if (state.status === 'running') {
-          state.timerMs += deltaMs;
-          state.tickAccumulator += deltaMs;
-
-          while (state.tickAccumulator >= tickMs && state.status === 'running') {
-            state.tickAccumulator -= tickMs;
-            step();
+          if (state.status === 'running') {
+            state.timerMs += deltaMs;
           }
-
-          drawBoard();
-          updateHud();
+          state.tickAccumulator += deltaMs;
         }
 
-        if (state.status === 'idle') {
-          drawBoard();
-          updateHud();
+        while (state.tickAccumulator >= tickMs && state.status === 'running') {
+          state.tickAccumulator -= tickMs;
+          step();
+          if (state.status === 'gameOver' || state.status === 'won') {
+            break;
+          }
         }
 
-        if (state.status === 'paused' || state.status === 'gameOver' || state.status === 'won') {
-          drawBoard();
-          updateHud();
-        }
-
+        drawBoard();
+        updateHud();
         requestAnimationFrame(loop);
       }
 
