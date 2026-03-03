@@ -186,12 +186,13 @@
       const lcgIncrement = 1013904223;
       const initialSeed = 0xdecafbad >>> 0;
       const initialDirection = 'right';
-      const storageKey = 'minions-demo-2-state-v1';
-      const storageVersion = 1;
+      const storageKey = 'minions-demo-2-state-v2';
+      const storageVersion = 2;
       const defaultPersistence = {
         version: storageVersion,
         highScore: 0,
-        lastRunSummary: null
+        lastRunSummary: null,
+        lastSaveState: null
       };
 
       const persistedProgress = loadPersistedProgress();
@@ -224,27 +225,6 @@
         };
       }
 
-      function cloneSummary(value) {
-        if (!isObject(value)) return null;
-        return {
-          version: safeUnsigned(value.version, storageVersion),
-          timestamp: safeUnsigned(value.timestamp, Date.now()),
-          context: typeof value.context === 'string' ? value.context : 'unknown',
-          status: typeof value.status === 'string' ? value.status : 'unknown',
-          score: safeUnsigned(value.score, 0),
-          durationMs: safeUnsigned(value.durationMs, 0),
-          ticks: safeUnsigned(value.ticks, 0),
-          seed: safeUnsigned(value.seed, initialSeed),
-          maxTicks: value.maxTicks === undefined || value.maxTicks === null ? null : safeUnsigned(value.maxTicks, 0),
-          scenario: value.scenario || null,
-          snakeLength: safeUnsigned(value.snakeLength, 0),
-          head: sanitizeCell(value.head),
-          item: sanitizeCell(value.item),
-          movesApplied: safeUnsigned(value.movesApplied, 0),
-          endedBy: typeof value.endedBy === 'string' ? value.endedBy : null
-        };
-      }
-
       function sanitizeDirection(value) {
         if (!value) return null;
         const key = String(value);
@@ -255,14 +235,15 @@
         return {
           version: storageVersion,
           highScore: safeUnsigned(state && state.highScore, 0),
-          lastRunSummary: cloneSummary(state && state.lastRunSummary)
+          lastRunSummary: sanitizeSummary(state && state.lastRunSummary),
+          lastSaveState: sanitizeSaveState(state && state.lastSaveState)
         };
       }
 
       function sanitizeSummary(value) {
         if (!isObject(value)) return null;
         const summary = {
-          version: 1,
+          version: storageVersion,
           timestamp: safeUnsigned(value.timestamp, Date.now()),
           context: typeof value.context === 'string' ? value.context : 'unknown',
           status: typeof value.status === 'string' ? value.status : 'unknown',
@@ -279,6 +260,27 @@
           endedBy: typeof value.endedBy === 'string' ? value.endedBy : null
         };
         return summary;
+      }
+
+      function sanitizeSaveState(value) {
+        if (!isObject(value)) return null;
+        if (!isObject(value.state)) return null;
+        if (!Array.isArray(value.state.snake) || !value.state.snake.length) return null;
+
+        const state = cloneRunState(value.state, {
+          allowEmptySnake: false,
+          autoSpawnItem: false
+        });
+
+        if (!state.snake || !state.snake.length) {
+          return null;
+        }
+
+        return {
+          version: safeUnsigned(value.version, storageVersion),
+          scenario: typeof value.scenario === 'string' ? value.scenario : null,
+          state
+        };
       }
 
       function loadPersistedProgress() {
@@ -300,7 +302,8 @@
           const loaded = {
             version: safeUnsigned(parsed.version, storageVersion),
             highScore: safeUnsigned(parsed.highScore, defaultPersistence.highScore),
-            lastRunSummary: sanitizeSummary(parsed.lastRunSummary)
+            lastRunSummary: sanitizeSummary(parsed.lastRunSummary),
+            lastSaveState: sanitizeSaveState(parsed.lastSaveState)
           };
           return loaded;
         } catch (_error) {
@@ -407,14 +410,57 @@
       }
 
       function copySnake(rawSnake) {
-        return (rawSnake || []).map((segment) => ({
+        const source = Array.isArray(rawSnake) ? rawSnake : [];
+        return source.map((segment) => ({
           col: clampCell(Number.isInteger(segment && segment.col) ? segment.col : 0, board.cols),
           row: clampCell(Number.isInteger(segment && segment.row) ? segment.row : 0, board.rows)
         }));
       }
 
+      function cloneRunState(rawState, options = {}) {
+        const state = rawState && isObject(rawState) ? rawState : {};
+
+        const snake = copySnake(state.snake);
+        const sanitizedSnake =
+          snake.length > 0 ? snake : [{ col: 5, row: 5 }, { col: 4, row: 5 }, { col: 3, row: 5 }];
+
+        const direction = clampDirection(state.direction);
+        const queuedDirection = clampDirection(state.queuedDirection || state.direction);
+
+        const runState = {
+          status: typeof state.status === 'string' ? state.status : 'idle',
+          score: safeUnsigned(state.score, 0),
+          timerMs: safeUnsigned(state.timerMs, 0),
+          tickCount: safeUnsigned(state.tickCount, 0),
+          frameAccumulator: 0,
+          tickAccumulator: 0,
+          direction,
+          queuedDirection,
+          snake: options.allowEmptySnake ? snake : sanitizedSnake,
+          growthQueued: safeUnsigned(state.growthQueued, 0),
+          seed: seedFromInput(state.seed, initialSeed),
+          item: sanitizeCell(state.item),
+          phase: safeUnsigned(state.phase, 0),
+          lastFrameTs: 0
+        };
+
+        const shouldSpawn = options.autoSpawnItem !== false;
+        if (shouldSpawn && runState.item === null) {
+          const blocked = occupiedBySnake(runState.snake);
+          const spawn = pickSpawn(runState.seed, blocked);
+          runState.item = spawn.item;
+          runState.seed = spawn.nextSeed;
+        }
+        return runState;
+      }
+
       function persistProgressState() {
         persistProgress(persistedProgress);
+      }
+
+      function persistCurrentRunSnapshot(context = 'gameplay', runState = state) {
+        persistedProgress.lastSaveState = buildPersistableState(runState, context);
+        persistProgressState();
       }
 
       function setHighScore(value) {
@@ -430,7 +476,7 @@
       function buildRunSummary(runState, context, extras = {}) {
         const head = runState.snake[0] || null;
         return {
-          version: 1,
+          version: storageVersion,
           context,
           timestamp: safeUnsigned(
             extras.timestamp,
@@ -450,6 +496,27 @@
           item: runState.item ? { col: runState.item.col, row: runState.item.row } : null,
           movesApplied: safeUnsigned(extras.movesApplied, runState.tickCount),
           endedBy: extras.endedBy || 'completed'
+        };
+      }
+
+      function buildPersistableState(runState, context = 'gameplay') {
+        return {
+          version: storageVersion,
+          scenario: typeof context === 'string' ? context : 'gameplay',
+          state: {
+            version: storageVersion,
+            status: runState.status,
+            score: safeUnsigned(runState.score, 0),
+            timerMs: safeUnsigned(runState.timerMs, 0),
+            tickCount: safeUnsigned(runState.tickCount, 0),
+            direction: clampDirection(runState.direction),
+            queuedDirection: clampDirection(runState.queuedDirection),
+            snake: copySnake(runState.snake),
+            growthQueued: safeUnsigned(runState.growthQueued, 0),
+            seed: seedFromInput(runState.seed, initialSeed),
+            item: sanitizeCell(runState.item),
+            phase: safeUnsigned(runState.phase, 0)
+          }
         };
       }
 
@@ -473,38 +540,44 @@
       }
 
       function createInitialRunState(overrides = {}) {
-        const runState = {
-          status: 'idle',
-          score: safeUnsigned(overrides.score, 0),
-          timerMs: safeUnsigned(overrides.timerMs, 0),
-          tickCount: safeUnsigned(overrides.tickCount, 0),
-          frameAccumulator: 0,
-          tickAccumulator: 0,
-          direction: clampDirection(overrides.direction),
-          queuedDirection: clampDirection(overrides.queuedDirection || overrides.direction),
-          snake: [],
-          growthQueued: safeUnsigned(overrides.growthQueued, 0),
-          seed: seedFromInput(overrides.seed, initialSeed),
-          item: null,
-          phase: safeUnsigned(overrides.phase, 0),
-          lastFrameTs: 0
-        };
-
-        runState.snake = copySnake(
-          overrides.snake && overrides.snake.length
+        const baseSnake =
+          overrides.snake && Array.isArray(overrides.snake) && overrides.snake.length
             ? overrides.snake
-            : [{ col: 5, row: 5 }, { col: 4, row: 5 }, { col: 3, row: 5 }]
+            : [{ col: 5, row: 5 }, { col: 4, row: 5 }, { col: 3, row: 5 }];
+
+        const runState = cloneRunState(
+          {
+            status: 'idle',
+            score: safeUnsigned(overrides.score, 0),
+            timerMs: safeUnsigned(overrides.timerMs, 0),
+            tickCount: safeUnsigned(overrides.tickCount, 0),
+            direction: clampDirection(overrides.direction),
+            queuedDirection: clampDirection(overrides.queuedDirection || overrides.direction),
+            snake: baseSnake,
+            growthQueued: safeUnsigned(overrides.growthQueued, 0),
+            seed: seedFromInput(overrides.seed, initialSeed),
+            item: sanitizeCell(overrides.item),
+            phase: safeUnsigned(overrides.phase, 0)
+          },
+          {
+            allowEmptySnake: false
+          }
         );
 
         const blocked = occupiedBySnake(runState.snake);
-        const providedItem = sanitizeCell(overrides.item);
-        if (providedItem && !blocked.has(keyFromCell(providedItem.col, providedItem.row))) {
-          runState.item = providedItem;
-        } else {
+        if (runState.item) {
+          const blockedItem = keyFromCell(runState.item.col, runState.item.row);
+          if (blocked.has(blockedItem)) {
+            runState.item = null;
+          }
+        }
+
+        if (runState.item === null) {
           const spawn = pickSpawn(runState.seed, blocked);
           runState.item = spawn.item;
           runState.seed = spawn.nextSeed;
         }
+
         return runState;
       }
 
@@ -512,6 +585,7 @@
         const initial = createInitialRunState();
         Object.assign(state, initial);
         state.status = 'idle';
+        persistCurrentRunSnapshot('reset', state);
 
         startBtn.disabled = false;
         pauseBtn.disabled = true;
@@ -522,6 +596,7 @@
 
       function handleRunComplete(completedState, extras = {}) {
         pauseButtonsAfterEnd();
+        persistCurrentRunSnapshot('gameover', completedState);
         finalizeRun(completedState, 'gameplay', {
           scenario: typeof extras.scenario === 'string' ? extras.scenario : null,
           endedBy: extras.endedBy || 'completed',
@@ -679,89 +754,106 @@
 
         for (let index = 0; index < movesInput.length; index += 1) {
           const nextMove = movesInput[index];
-          const direction = normalizeDirection(nextMove);
+          const direction = normalizeDirection(
+            nextMove && nextMove.direction !== undefined ? nextMove.direction : nextMove
+          );
           if (!direction) continue;
-          const tick = safeInteger(nextMove && (nextMove.tick ?? nextMove.at), index);
+          const tick = safeUnsigned(nextMove && (nextMove.tick ?? nextMove.at), index);
           parsed.push({
             tick: safeUnsigned(tick, index),
+            index,
             direction
           });
         }
 
-        parsed.sort((a, b) => a.tick - b.tick);
+        parsed.sort((a, b) => (a.tick - b.tick) || (a.index - b.index));
         return parsed;
       }
 
       function runScenario(options = {}) {
         const normalizedMoves = normalizeScenarioMoves(options.moves);
-        const moveMap = new Map();
-        for (const move of normalizedMoves) {
-          moveMap.set(move.tick, move.direction);
-        }
-
         const normalizedStartState = isObject(options.startState) ? options.startState : null;
         const chosenSeed =
           normalizedStartState && normalizedStartState.seed !== undefined
             ? normalizedStartState.seed
             : options.seed;
 
-        const runState = createInitialRunState({
-          seed: seedFromInput(chosenSeed, initialSeed),
-          direction:
-            normalizedStartState && normalizedStartState.direction !== undefined
-              ? normalizedStartState.direction
-              : options.direction,
-          queuedDirection:
-            normalizedStartState && normalizedStartState.queuedDirection !== undefined
-              ? normalizedStartState.queuedDirection
-              : options.queuedDirection || options.direction,
-          score:
-            normalizedStartState && normalizedStartState.score !== undefined
-              ? normalizedStartState.score
-              : options.score,
-          growthQueued:
-            normalizedStartState && normalizedStartState.growthQueued !== undefined
-              ? normalizedStartState.growthQueued
-              : options.growthQueued,
-          timerMs:
-            normalizedStartState && normalizedStartState.durationMs !== undefined
-              ? normalizedStartState.durationMs
-              : options.timerMs,
-          tickCount:
-            normalizedStartState && normalizedStartState.ticks !== undefined
-              ? normalizedStartState.ticks
-              : options.tickCount,
-          phase:
-            normalizedStartState && normalizedStartState.phase !== undefined
-              ? normalizedStartState.phase
-              : options.phase,
-          item:
-            normalizedStartState && normalizedStartState.item
-              ? normalizedStartState.item
-              : null,
-          snake: copySnake(
-            normalizedStartState && Array.isArray(normalizedStartState.snake)
-              ? normalizedStartState.snake
-              : []
-          )
-        });
+        const runState = cloneRunState(
+          normalizedStartState
+            ? {
+                status: 'idle',
+                score: safeUnsigned(normalizedStartState.score, safeUnsigned(options.score, 0)),
+                timerMs: safeUnsigned(normalizedStartState.durationMs, safeUnsigned(options.timerMs, 0)),
+                tickCount: safeUnsigned(normalizedStartState.ticks, safeUnsigned(options.tickCount, 0)),
+                direction: clampDirection(normalizedStartState.direction || options.direction),
+                queuedDirection: clampDirection(
+                  normalizedStartState.queuedDirection || normalizedStartState.direction || options.direction
+                ),
+                snake: copySnake(
+                  normalizedStartState && Array.isArray(normalizedStartState.snake) && normalizedStartState.snake.length
+                    ? normalizedStartState.snake
+                    : []
+                ),
+                growthQueued: safeUnsigned(normalizedStartState.growthQueued, safeUnsigned(options.growthQueued, 0)),
+                seed: seedFromInput(chosenSeed, initialSeed),
+                item: sanitizeCell(normalizedStartState.item),
+                phase: safeUnsigned(normalizedStartState.phase, safeUnsigned(options.phase, 0))
+              }
+            : {
+                status: 'idle',
+                score: safeUnsigned(options.score, 0),
+                timerMs: safeUnsigned(options.timerMs, 0),
+                tickCount: safeUnsigned(options.tickCount, 0),
+                direction: clampDirection(options.direction),
+                queuedDirection: clampDirection(options.queuedDirection || options.direction),
+                snake: [],
+                growthQueued: safeUnsigned(options.growthQueued, 0),
+                seed: seedFromInput(options.seed, initialSeed),
+                item: sanitizeCell(options.item),
+                phase: safeUnsigned(options.phase, 0)
+              },
+          {
+            allowEmptySnake: !normalizedStartState
+          }
+        );
+
+        if (runState.snake.length === 0) {
+          runState.snake = [{ col: 5, row: 5 }, { col: 4, row: 5 }, { col: 3, row: 5 }];
+        }
+        const blocked = occupiedBySnake(runState.snake);
+        if (runState.item) {
+          const blockedItem = keyFromCell(runState.item.col, runState.item.row);
+          if (blocked.has(blockedItem)) {
+            runState.item = null;
+          }
+        }
+
+        if (runState.item === null && blocked.size < board.cols * board.rows) {
+          const spawn = pickSpawn(runState.seed, blocked);
+          runState.item = spawn.item;
+          runState.seed = spawn.nextSeed;
+        }
 
         runState.status = 'running';
-        runState.timerMs = safeUnsigned(runState.timerMs, 0);
-        runState.tickCount = safeUnsigned(runState.tickCount, 0);
+        const baseTimerMs = safeUnsigned(runState.timerMs, 0);
+        runState.timerMs = baseTimerMs;
 
         const maxTicks = safeUnsigned(options.maxTicks, 200);
         const maxRemainingTicks = Math.max(0, maxTicks - runState.tickCount);
-        const timerOffsetMs = safeUnsigned(runState.timerMs, 0);
         let endedBy = 'running';
+        let moveCursor = 0;
+        const normalizedMovesForRun = normalizedMoves;
 
         for (let tick = 0; tick < maxRemainingTicks && runState.status === 'running'; tick += 1) {
-          const queuedDirection = moveMap.get(tick);
-          if (queuedDirection) {
-            runState.queuedDirection = queuedDirection;
+          while (
+            moveCursor < normalizedMovesForRun.length &&
+            normalizedMovesForRun[moveCursor].tick === tick
+          ) {
+            runState.queuedDirection = normalizedMovesForRun[moveCursor].direction;
+            moveCursor += 1;
           }
           stepWithState(runState);
-          runState.timerMs = timerOffsetMs + (tick + 1) * tickMs;
+          runState.timerMs = baseTimerMs + (tick + 1) * tickMs;
         }
 
         if (runState.status === 'running' && runState.tickCount >= maxTicks) {
@@ -866,63 +958,103 @@
         const baseY = y + (row + 0.5) * cellSize;
         const jitter = Math.sin(phase) * (cellSize * 0.06);
 
+        const scale = isHead ? 1 : 0.88;
+        const bodyWidth = cellSize * 0.47 * scale;
+        const bodyHeight = cellSize * (isHead ? 0.58 : 0.52) * scale;
+        const bodyX = baseX - bodyWidth / 2;
+        const bodyY = baseY - bodyHeight * 0.08 + jitter * 0.25;
+        const bodyRadius = bodyWidth * 0.28;
+        const bodyBottom = bodyY + bodyHeight;
+
         if (isHead) {
-          const bodyWidth = cellSize * 0.46;
-          const bodyHeight = cellSize * 0.54;
-          const bodyX = baseX - bodyWidth / 2;
-          const bodyY = baseY - 0.05 * cellSize + jitter;
-          const bodyRadius = bodyWidth * 0.3;
-          const bodyBottom = bodyY + bodyHeight;
-
-          ctx.fillStyle = 'var(--body)';
-          ctx.beginPath();
-          roundRect(bodyX, bodyY, bodyWidth, bodyHeight, bodyRadius);
-          ctx.fill();
-
-          const headRadius = cellSize * 0.29;
-          const headX = baseX;
-          const headY = baseY - cellSize * 0.22 + jitter * 0.35;
-          ctx.fillStyle = 'var(--head)';
-          ctx.beginPath();
-          ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
-          ctx.fill();
-
-          ctx.strokeStyle = '#d4ad2c';
-          ctx.lineWidth = Math.max(2, cellSize * 0.05);
-          ctx.beginPath();
-          ctx.arc(headX, headY, headRadius - 1, -Math.PI * 0.75, Math.PI * 0.75);
-          ctx.stroke();
-
-          const eyeGap = cellSize * 0.09;
-          const eyeY = headY - cellSize * 0.05;
-          const eyeRadius = cellSize * 0.045;
-          ctx.fillStyle = '#1a2233';
-          ctx.beginPath();
-          ctx.arc(headX - eyeGap, eyeY, eyeRadius, 0, Math.PI * 2);
-          ctx.arc(headX + eyeGap, eyeY, eyeRadius, 0, Math.PI * 2);
-          ctx.fill();
-
-          ctx.strokeStyle = '#cce5ff';
-          ctx.lineWidth = Math.max(2, cellSize * 0.035);
-          ctx.beginPath();
-          ctx.moveTo(baseX - bodyWidth / 2, baseY + jitter * 0.2);
-          ctx.lineTo(baseX + bodyWidth / 2, baseY + jitter * 0.2);
-          ctx.stroke();
-
-          const footY = bodyBottom + cellSize * 0.11;
-          const footW = bodyWidth * 0.25;
-          const footH = cellSize * 0.06;
-          ctx.fillStyle = '#e2be5a';
-          ctx.fillRect(baseX - bodyWidth * 0.26, footY, footW, footH);
-          ctx.fillRect(baseX + bodyWidth * 0.01, footY, footW, footH);
-          return;
+          ctx.shadowColor = 'rgba(0, 0, 0, 0.25)';
+          ctx.shadowBlur = 4;
         }
 
-        const radius = cellSize * 0.24;
-        ctx.fillStyle = 'rgba(80, 160, 244, 0.94)';
+        ctx.fillStyle = isHead ? '#5fb6f4' : '#4b97ef';
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.18)';
+        ctx.shadowBlur = 3;
         ctx.beginPath();
-        ctx.arc(baseX, baseY + jitter * 0.4, radius, 0, Math.PI * 2);
+        roundRect(bodyX, bodyY, bodyWidth, bodyHeight, bodyRadius);
         ctx.fill();
+        ctx.shadowBlur = 0;
+
+        const headW = Math.max(4.2, cellSize * 0.32 * scale);
+        const headX = baseX + (isHead ? bodyWidth * 0.02 : 0);
+        const headY = baseY - bodyHeight * 0.25 + jitter * 0.2;
+        const capHeight = Math.max(2.8, cellSize * 0.22 * scale);
+        ctx.fillStyle = isHead ? 'var(--head)' : '#f7e06e';
+        ctx.beginPath();
+        roundRect(
+          headX - headW,
+          headY - capHeight,
+          headW * 2,
+          capHeight * 1.35,
+          Math.min(3, headW * 0.45)
+        );
+        ctx.fill();
+
+        const maskY = baseY + bodyHeight * 0.1 + jitter * 0.15;
+        const maskX = baseX - bodyWidth * 0.24;
+        const maskW = bodyWidth * 0.48;
+        const maskH = bodyHeight * 0.28;
+        ctx.fillStyle = '#f0f7ff';
+        ctx.beginPath();
+        roundRect(maskX, maskY - maskH / 2, maskW, maskH, Math.min(maskH / 3, 2.8));
+        ctx.fill();
+
+        const eyeY = maskY;
+        const eyeGap = bodyWidth * 0.18;
+        const eyeR = Math.max(1.2, cellSize * 0.028);
+        ctx.fillStyle = '#10192a';
+        ctx.beginPath();
+        ctx.arc(baseX - eyeGap, eyeY, eyeR, 0, Math.PI * 2);
+        ctx.arc(baseX + eyeGap, eyeY, eyeR, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (isHead) {
+          const strapY = maskY - maskH * 0.44;
+          const strapGlow = cellSize * 0.08;
+          ctx.strokeStyle = 'rgba(24, 33, 57, 0.7)';
+          ctx.lineWidth = Math.max(1, cellSize * 0.022);
+          ctx.beginPath();
+          ctx.moveTo(bodyX + 1, strapY);
+          ctx.lineTo(bodyX + bodyWidth - 1, strapY);
+          ctx.stroke();
+
+          ctx.strokeStyle = '#5d6478';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(maskX - maskH * 0.2, eyeY);
+          ctx.quadraticCurveTo(baseX, maskY - maskH * 0.6, maskX + maskW + maskH * 0.2, eyeY);
+          ctx.stroke();
+
+          ctx.fillStyle = '#d99d1f';
+          ctx.beginPath();
+          ctx.arc(headX + headW * 0.28, baseY - cellSize * 0.22, strapGlow * 0.32, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          const glove = cellSize * 0.055;
+          ctx.fillStyle = '#efcf67';
+          ctx.fillRect(bodyX + cellSize * 0.04, bodyY + bodyHeight * 0.18, glove, bodyHeight * 0.5);
+          ctx.fillRect(bodyX + bodyWidth - cellSize * 0.04 - glove, bodyY + bodyHeight * 0.18, glove, bodyHeight * 0.5);
+        }
+
+        const footY = bodyBottom + cellSize * 0.11;
+        const footW = bodyWidth * 0.26;
+        const footH = cellSize * 0.055;
+        ctx.fillStyle = '#f0d47a';
+        ctx.fillRect(baseX - bodyWidth * 0.24, footY, footW, footH);
+        ctx.fillRect(baseX + bodyWidth * 0.02, footY, footW, footH);
+
+        if (isHead && cellSize > 12) {
+          ctx.strokeStyle = '#9ccfff';
+          ctx.lineWidth = Math.max(1.2, cellSize * 0.022);
+          ctx.beginPath();
+          ctx.moveTo(baseX - bodyWidth * 0.17, bodyY + bodyHeight * 0.2);
+          ctx.lineTo(baseX + bodyWidth * 0.17, bodyY + bodyHeight * 0.2);
+          ctx.stroke();
+        }
       }
 
       function drawItem() {
@@ -1065,6 +1197,7 @@
       function startGame() {
         if (state.status === 'running' || state.status === 'gameOver' || state.status === 'won') return;
         state.status = 'running';
+        persistCurrentRunSnapshot('start', state);
         startBtn.disabled = true;
         pauseBtn.disabled = false;
         resetBtn.disabled = false;
@@ -1074,6 +1207,7 @@
       function pauseGame() {
         if (state.status !== 'running') return;
         state.status = 'paused';
+        persistCurrentRunSnapshot('pause', state);
         startBtn.disabled = false;
         pauseBtn.disabled = true;
         updateHud();
@@ -1082,6 +1216,7 @@
       function resumeGame() {
         if (state.status !== 'paused') return;
         state.status = 'running';
+        persistCurrentRunSnapshot('resume', state);
         startBtn.disabled = true;
         pauseBtn.disabled = false;
         updateHud();
@@ -1146,6 +1281,7 @@
       window.clearMinionsPersistedState = () => {
         persistedProgress.highScore = 0;
         persistedProgress.lastRunSummary = null;
+        persistedProgress.lastSaveState = null;
         persistProgressState();
         updateHudFromPersistence();
       };
