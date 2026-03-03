@@ -139,7 +139,7 @@
 <body>
   <header>
     <h1>Minions Demo 2</h1>
-    <p>Frontend-only board demo: tap the minion to score.</p>
+    <p>Frontend-only board demo: move with arrows/WASD or tap a nearby cell.</p>
   </header>
   <main>
     <div id="game-frame">
@@ -148,7 +148,7 @@
 
     <div class="hud">
       <p id="hint" style="margin: 0 0 0.45rem; color: var(--muted)">
-        Grid at target resolution with crisp cells for desktop and mobile.
+        Press Start to enter the deterministic snake-style loop.
       </p>
       <div class="hud-row">
       <span>Score: <strong id="score">0</strong></span>
@@ -168,6 +168,7 @@
   <script>
     (function () {
       const frame = document.getElementById('game-frame');
+      const hint = document.getElementById('hint');
       const canvas = document.getElementById('boardCanvas');
       const ctx = canvas.getContext('2d');
       const startBtn = document.getElementById('start');
@@ -176,24 +177,222 @@
       const scoreEl = document.getElementById('score');
       const timerEl = document.getElementById('timer');
 
-      const board = {
-        cols: 12,
-        rows: 12
+      const board = { cols: 12, rows: 12 };
+      const tickMs = 240;
+      const growthPerItem = 1;
+      const lcgMultiplier = 1664525;
+      const lcgIncrement = 1013904223;
+      const initialSeed = 0xdecafbad >>> 0;
+      const initialDirection = 'right';
+
+      const directions = {
+        up: { dx: 0, dy: -1 },
+        down: { dx: 0, dy: 1 },
+        left: { dx: -1, dy: 0 },
+        right: { dx: 1, dy: 0 }
       };
 
-      const minion = {
-        col: 5,
-        row: 5,
-        phase: 0
+      const keyToDirection = {
+        ArrowUp: 'up',
+        ArrowDown: 'down',
+        ArrowLeft: 'left',
+        ArrowRight: 'right',
+        w: 'up',
+        W: 'up',
+        s: 'down',
+        S: 'down',
+        a: 'left',
+        A: 'left',
+        d: 'right',
+        D: 'right'
       };
 
-      let score = 0;
-      let running = false;
-      let timer = 0;
-      let lastFrameMs = 0;
-      let animationId = null;
+      const state = {
+        status: 'idle',
+        score: 0,
+        timerMs: 0,
+        frameAccumulator: 0,
+        tickAccumulator: 0,
+        direction: initialDirection,
+        queuedDirection: initialDirection,
+        snake: [],
+        growthQueued: 0,
+        seed: initialSeed,
+        item: null,
+        phase: 0,
+        lastFrameTs: 0
+      };
 
       let layout = null;
+
+      function stepRng(seed) {
+        return (Math.imul(seed, lcgMultiplier) + lcgIncrement) >>> 0;
+      }
+
+      function keyFromCell(col, row) {
+        return `${col}:${row}`;
+      }
+
+      function nextDirectionFromInput(current, requested) {
+        if (!requested || requested === current) return current;
+
+        const a = directions[current];
+        const b = directions[requested];
+        const isReverse = a.dx === -b.dx && a.dy === -b.dy;
+        if (isReverse) return current;
+
+        return requested;
+      }
+
+      function occupiedBySnake(snake) {
+        const blocked = new Set();
+        for (const segment of snake) {
+          blocked.add(keyFromCell(segment.col, segment.row));
+        }
+        return blocked;
+      }
+
+      function pickSpawn(seed, blockedCells) {
+        const totalCells = board.cols * board.rows;
+        let nextSeed = seed;
+        let spawn = null;
+
+        if (blockedCells.size >= totalCells) {
+          return { item: null, nextSeed };
+        }
+
+        for (let attempts = 0; attempts < totalCells * 4; attempts += 1) {
+          nextSeed = stepRng(nextSeed);
+          const col = nextSeed % board.cols;
+          nextSeed = stepRng(nextSeed);
+          const row = nextSeed % board.rows;
+          const candidate = keyFromCell(col, row);
+          if (!blockedCells.has(candidate)) {
+            spawn = { col, row };
+            break;
+          }
+        }
+
+        if (!spawn) {
+          // Deterministic fallback scan when pseudo-random path is exhausted.
+          for (let row = 0; row < board.rows; row += 1) {
+            for (let col = 0; col < board.cols; col += 1) {
+              const candidate = keyFromCell(col, row);
+              if (!blockedCells.has(candidate)) {
+                spawn = { col, row };
+                break;
+              }
+            }
+            if (spawn) break;
+          }
+        }
+
+        return { item: spawn, nextSeed };
+      }
+
+      function isSameCell(a, b) {
+        return a.col === b.col && a.row === b.row;
+      }
+
+      function resetState() {
+        state.status = 'idle';
+        state.score = 0;
+        state.timerMs = 0;
+        state.frameAccumulator = 0;
+        state.tickAccumulator = 0;
+        state.direction = initialDirection;
+        state.queuedDirection = initialDirection;
+        state.growthQueued = 0;
+        state.seed = initialSeed;
+        state.phase = 0;
+        state.lastFrameTs = 0;
+
+        state.snake = [
+          { col: 5, row: 5 },
+          { col: 4, row: 5 },
+          { col: 3, row: 5 }
+        ];
+
+        const blocked = occupiedBySnake(state.snake);
+        const spawn = pickSpawn(state.seed, blocked);
+        state.item = spawn.item;
+        state.seed = spawn.nextSeed;
+
+        startBtn.disabled = false;
+        pauseBtn.disabled = true;
+        resetBtn.disabled = false;
+        updateHud();
+        drawBoard();
+      }
+
+      function pauseButtonsAfterEnd() {
+        pauseBtn.disabled = true;
+        startBtn.disabled = true;
+      }
+
+      function setDirection(intent) {
+        if (!intent || !directions[intent]) return;
+        if (state.status === 'gameOver' || state.status === 'won') return;
+        state.queuedDirection = intent;
+      }
+
+      function step() {
+        if (state.status !== 'running') return;
+
+        state.direction = nextDirectionFromInput(state.direction, state.queuedDirection);
+        const move = directions[state.direction];
+        const head = state.snake[0];
+        const nextHead = {
+          col: head.col + move.dx,
+          row: head.row + move.dy
+        };
+
+        const hitWall =
+          nextHead.col < 0 ||
+          nextHead.row < 0 ||
+          nextHead.col >= board.cols ||
+          nextHead.row >= board.rows;
+
+        const bodyForSelfCollision =
+          state.growthQueued > 0 ? state.snake : state.snake.slice(0, -1);
+
+        const hitSelf = bodyForSelfCollision.some((segment) => isSameCell(segment, nextHead));
+
+        if (hitWall || hitSelf) {
+          state.status = 'gameOver';
+          pauseButtonsAfterEnd();
+          return;
+        }
+
+        state.snake.unshift(nextHead);
+
+        let growthQueued = state.growthQueued;
+        const didPickup = state.item && isSameCell(nextHead, state.item);
+
+        if (didPickup) {
+          growthQueued += growthPerItem;
+          state.score += 1;
+
+          const blocked = occupiedBySnake(state.snake);
+          const spawn = pickSpawn(state.seed, blocked);
+          state.item = spawn.item;
+          state.seed = spawn.nextSeed;
+
+          if (!state.item) {
+            state.status = 'won';
+            pauseButtonsAfterEnd();
+          }
+        }
+
+        if (growthQueued > 0) {
+          growthQueued -= 1;
+        } else {
+          state.snake.pop();
+        }
+
+        state.growthQueued = growthQueued;
+        state.queuedDirection = state.direction;
+      }
 
       function measureLayout() {
         const { width, height } = frame.getBoundingClientRect();
@@ -223,34 +422,6 @@
         };
 
         drawBoard();
-      }
-
-      function pointInMinion(x, y) {
-        if (!layout) return false;
-
-        const { cellSize, x: ox, y: oy } = layout;
-        const c = ox + (minion.col + 0.5) * cellSize;
-        const r = oy + (minion.row + 0.5) * cellSize;
-        const jitter = Math.sin(minion.phase) * (cellSize * 0.06);
-
-        const headRadius = cellSize * 0.29;
-        const headX = c;
-        const headY = r - cellSize * 0.22 + jitter * 0.35;
-        const bodyTop = r + jitter;
-        const bodyWidth = cellSize * 0.46;
-        const bodyHeight = cellSize * 0.54;
-        const bodyLeft = c - bodyWidth / 2;
-
-        const inHead =
-          (x - headX) ** 2 + (y - headY) ** 2 <= headRadius ** 2;
-
-        const inBody =
-          x >= bodyLeft &&
-          x <= bodyLeft + bodyWidth &&
-          y >= bodyTop &&
-          y <= bodyTop + bodyHeight;
-
-        return inHead || inBody;
       }
 
       function drawCellGrid() {
@@ -291,68 +462,6 @@
         }
       }
 
-      function drawMinion() {
-        const { cellSize, x, y } = layout;
-        const baseX = x + (minion.col + 0.5) * cellSize;
-        const baseY = y + (minion.row + 0.5) * cellSize;
-        const jitter = Math.sin(minion.phase) * (cellSize * 0.06);
-
-        // Body
-        const bodyWidth = cellSize * 0.46;
-        const bodyHeight = cellSize * 0.54;
-        const bodyX = baseX - bodyWidth / 2;
-        const bodyY = baseY - 0.05 * cellSize + jitter;
-        const bodyRadius = bodyWidth * 0.3;
-        const bodyBottom = bodyY + bodyHeight;
-
-        ctx.fillStyle = 'var(--body)';
-        ctx.beginPath();
-        roundRect(bodyX, bodyY, bodyWidth, bodyHeight, bodyRadius);
-        ctx.fill();
-
-        // Head
-        const headRadius = cellSize * 0.29;
-        const headX = baseX;
-        const headY = baseY - cellSize * 0.22 + jitter * 0.35;
-        ctx.fillStyle = 'var(--head)';
-        ctx.beginPath();
-        ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Distinction detail: head strap and body overall lines
-        ctx.strokeStyle = '#d4ad2c';
-        ctx.lineWidth = Math.max(2, cellSize * 0.05);
-        ctx.beginPath();
-        ctx.arc(headX, headY, headRadius - 1, -Math.PI * 0.75, Math.PI * 0.75);
-        ctx.stroke();
-
-        // Eyes and glasses band
-        const eyeGap = cellSize * 0.09;
-        const eyeY = headY - cellSize * 0.05;
-        const eyeRadius = cellSize * 0.045;
-        ctx.fillStyle = '#1a2233';
-        ctx.beginPath();
-        ctx.arc(headX - eyeGap, eyeY, eyeRadius, 0, Math.PI * 2);
-        ctx.arc(headX + eyeGap, eyeY, eyeRadius, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Body separation line to make head/body visually distinct
-        ctx.strokeStyle = '#cce5ff';
-        ctx.lineWidth = Math.max(2, cellSize * 0.035);
-        ctx.beginPath();
-        ctx.moveTo(baseX - bodyWidth / 2, baseY + jitter * 0.2);
-        ctx.lineTo(baseX + bodyWidth / 2, baseY + jitter * 0.2);
-        ctx.stroke();
-
-        // Feet indicators
-        const footY = bodyBottom + cellSize * 0.11;
-        const footW = bodyWidth * 0.25;
-        const footH = cellSize * 0.06;
-        ctx.fillStyle = '#e2be5a';
-        ctx.fillRect(baseX - bodyWidth * 0.26, footY, footW, footH);
-        ctx.fillRect(baseX + bodyWidth * 0.01, footY, footW, footH);
-      }
-
       function roundRect(x, y, width, height, radius) {
         const r = Math.min(radius, width / 2, height / 2);
         ctx.moveTo(x + r, y);
@@ -360,6 +469,100 @@
         ctx.arcTo(x + width, y + height, x, y + height, r);
         ctx.arcTo(x, y + height, x, y, r);
         ctx.arcTo(x, y, x + width, y, r);
+      }
+
+      function drawMinionSegment(col, row, phase, isHead) {
+        const { x, y, cellSize } = layout;
+        const baseX = x + (col + 0.5) * cellSize;
+        const baseY = y + (row + 0.5) * cellSize;
+        const jitter = Math.sin(phase) * (cellSize * 0.06);
+
+        if (isHead) {
+          const bodyWidth = cellSize * 0.46;
+          const bodyHeight = cellSize * 0.54;
+          const bodyX = baseX - bodyWidth / 2;
+          const bodyY = baseY - 0.05 * cellSize + jitter;
+          const bodyRadius = bodyWidth * 0.3;
+          const bodyBottom = bodyY + bodyHeight;
+
+          ctx.fillStyle = 'var(--body)';
+          ctx.beginPath();
+          roundRect(bodyX, bodyY, bodyWidth, bodyHeight, bodyRadius);
+          ctx.fill();
+
+          const headRadius = cellSize * 0.29;
+          const headX = baseX;
+          const headY = baseY - cellSize * 0.22 + jitter * 0.35;
+          ctx.fillStyle = 'var(--head)';
+          ctx.beginPath();
+          ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = '#d4ad2c';
+          ctx.lineWidth = Math.max(2, cellSize * 0.05);
+          ctx.beginPath();
+          ctx.arc(headX, headY, headRadius - 1, -Math.PI * 0.75, Math.PI * 0.75);
+          ctx.stroke();
+
+          const eyeGap = cellSize * 0.09;
+          const eyeY = headY - cellSize * 0.05;
+          const eyeRadius = cellSize * 0.045;
+          ctx.fillStyle = '#1a2233';
+          ctx.beginPath();
+          ctx.arc(headX - eyeGap, eyeY, eyeRadius, 0, Math.PI * 2);
+          ctx.arc(headX + eyeGap, eyeY, eyeRadius, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = '#cce5ff';
+          ctx.lineWidth = Math.max(2, cellSize * 0.035);
+          ctx.beginPath();
+          ctx.moveTo(baseX - bodyWidth / 2, baseY + jitter * 0.2);
+          ctx.lineTo(baseX + bodyWidth / 2, baseY + jitter * 0.2);
+          ctx.stroke();
+
+          const footY = bodyBottom + cellSize * 0.11;
+          const footW = bodyWidth * 0.25;
+          const footH = cellSize * 0.06;
+          ctx.fillStyle = '#e2be5a';
+          ctx.fillRect(baseX - bodyWidth * 0.26, footY, footW, footH);
+          ctx.fillRect(baseX + bodyWidth * 0.01, footY, footW, footH);
+          return;
+        }
+
+        const radius = cellSize * 0.24;
+        ctx.fillStyle = 'rgba(80, 160, 244, 0.94)';
+        ctx.beginPath();
+        ctx.arc(baseX, baseY + jitter * 0.4, radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawItem() {
+        if (!state.item) return;
+
+        const { x, y, cellSize } = layout;
+        const cx = x + (state.item.col + 0.5) * cellSize;
+        const cy = y + (state.item.row + 0.5) * cellSize;
+        const pulse = (Math.sin(state.phase * 1.8) + 1) / 2;
+        const wobble = cellSize * 0.08 * pulse;
+
+        ctx.fillStyle = '#ffd86b';
+        ctx.beginPath();
+        ctx.arc(cx, cy, cellSize * 0.18 + wobble, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#f6df6a';
+        ctx.beginPath();
+        ctx.arc(cx, cy, cellSize * 0.1 + wobble * 0.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      function drawMinion() {
+        const phase = state.phase;
+        for (let index = state.snake.length - 1; index >= 0; index--) {
+          const segment = state.snake[index];
+          drawMinionSegment(segment.col, segment.row, phase + index * 0.08, index === 0);
+        }
+        drawItem();
       }
 
       function drawBoard() {
@@ -372,7 +575,6 @@
         const { x, y, boardWidth, boardHeight } = layout;
         const border = 'rgba(255, 255, 255, 0.18)';
 
-        // Board background
         ctx.fillStyle = 'var(--panel)';
         ctx.fillRect(x - 3, y - 3, boardWidth + 6, boardHeight + 6);
         ctx.fillStyle = 'rgba(3, 11, 33, 0.95)';
@@ -385,78 +587,166 @@
         drawMinion();
       }
 
-      function loop(ts) {
-        if (!lastFrameMs) lastFrameMs = ts;
-        const delta = (ts - lastFrameMs) / 1000;
-        lastFrameMs = ts;
+      function updateHud() {
+        scoreEl.textContent = String(state.score);
+        timerEl.textContent = (state.timerMs / 1000).toFixed(1);
 
-        if (running) {
-          timer += delta;
-          minion.phase += delta * 8;
-          timerEl.textContent = timer.toFixed(1);
-          drawBoard();
+        if (state.status === 'gameOver') {
+          hint.textContent = 'Game over. Press Reset to start again.';
+          return;
         }
 
-        animationId = requestAnimationFrame(loop);
+        if (state.status === 'won') {
+          hint.textContent = 'You won. Reset for a new round.';
+          return;
+        }
+
+        if (state.status === 'running') {
+          hint.textContent = 'Use arrow keys/WASD or tap a nearby cell to steer.';
+          return;
+        }
+
+        hint.textContent = 'Press Start to begin. Growth queue: ' + state.growthQueued;
+      }
+
+      function cellFromPointer(event) {
+        if (!layout) return null;
+
+        const rect = canvas.getBoundingClientRect();
+        const px = event.clientX - rect.left;
+        const py = event.clientY - rect.top;
+
+        if (px < layout.x || py < layout.y) return null;
+
+        const col = Math.floor((px - layout.x) / layout.cellSize);
+        const row = Math.floor((py - layout.y) / layout.cellSize);
+
+        if (col < 0 || col >= board.cols || row < 0 || row >= board.rows) {
+          return null;
+        }
+
+        return { col, row };
+      }
+
+      function handleDirectionFromPointer(event) {
+        if (state.status !== 'running') return;
+
+        const head = state.snake[0];
+        const target = cellFromPointer(event);
+        if (!target || !head) return;
+
+        const deltaCol = target.col - head.col;
+        const deltaRow = target.row - head.row;
+
+        if (deltaCol === 0 && deltaRow === 0) return;
+
+        if (Math.abs(deltaCol) >= Math.abs(deltaRow)) {
+          setDirection(deltaCol > 0 ? 'right' : 'left');
+        } else {
+          setDirection(deltaRow > 0 ? 'down' : 'up');
+        }
+      }
+
+      function handleKeydown(event) {
+        const requested = keyToDirection[event.key];
+        if (requested) {
+          event.preventDefault();
+          setDirection(requested);
+          return;
+        }
+
+        if (event.key === ' ' || event.key === 'Enter') {
+          event.preventDefault();
+          if (state.status === 'running') {
+            pauseGame();
+            return;
+          }
+          if (state.status === 'paused') {
+            resumeGame();
+          }
+        }
       }
 
       function startGame() {
-        if (running) return;
-        running = true;
+        if (state.status === 'running' || state.status === 'gameOver' || state.status === 'won') return;
+        state.status = 'running';
         startBtn.disabled = true;
         pauseBtn.disabled = false;
         resetBtn.disabled = false;
+        updateHud();
       }
 
       function pauseGame() {
-        running = false;
+        if (state.status !== 'running') return;
+        state.status = 'paused';
         startBtn.disabled = false;
         pauseBtn.disabled = true;
+        updateHud();
       }
 
-      function moveMinionRandomly() {
-        minion.col = 1 + Math.floor(Math.random() * (board.cols - 2));
-        minion.row = 1 + Math.floor(Math.random() * (board.rows - 2));
-        minion.phase = Math.random() * Math.PI * 2;
+      function resumeGame() {
+        if (state.status !== 'paused') return;
+        state.status = 'running';
+        startBtn.disabled = true;
+        pauseBtn.disabled = false;
+        updateHud();
       }
 
       function resetGame() {
-        running = false;
-        startBtn.disabled = false;
-        pauseBtn.disabled = true;
-        resetBtn.disabled = true;
-        timer = 0;
-        score = 0;
-        scoreEl.textContent = score;
-        timerEl.textContent = '0.0';
-        minion.col = 5;
-        minion.row = 5;
-        minion.phase = 0;
-        drawBoard();
+        resetState();
       }
 
-      function handlePointerDown(event) {
-        if (!running) return;
-        const rect = canvas.getBoundingClientRect();
-        const x = event.clientX - rect.left;
-        const y = event.clientY - rect.top;
+      function loop(ts) {
+        if (!state.lastFrameTs) state.lastFrameTs = ts;
+        const deltaMs = ts - state.lastFrameTs;
+        state.lastFrameTs = ts;
 
-        if (pointInMinion(x, y)) {
-          score += 1;
-          scoreEl.textContent = score;
-          moveMinionRandomly();
+        state.phase += (deltaMs / 1000) * 8;
+
+        if (state.status === 'running' || state.status === 'paused') {
+          state.frameAccumulator += deltaMs;
         }
+
+        if (state.status === 'running') {
+          state.timerMs += deltaMs;
+          state.tickAccumulator += deltaMs;
+
+          while (state.tickAccumulator >= tickMs && state.status === 'running') {
+            state.tickAccumulator -= tickMs;
+            step();
+          }
+
+          drawBoard();
+          updateHud();
+        }
+
+        if (state.status === 'idle') {
+          drawBoard();
+          updateHud();
+        }
+
+        if (state.status === 'paused' || state.status === 'gameOver' || state.status === 'won') {
+          drawBoard();
+          updateHud();
+        }
+
+        requestAnimationFrame(loop);
       }
 
-      canvas.addEventListener('pointerdown', handlePointerDown);
-
-      startBtn.addEventListener('click', startGame);
+      canvas.addEventListener('pointerdown', handleDirectionFromPointer);
+      window.addEventListener('keydown', handleKeydown);
+      window.addEventListener('resize', measureLayout);
+      startBtn.addEventListener('click', () => {
+        if (state.status === 'paused') {
+          resumeGame();
+          return;
+        }
+        startGame();
+      });
       pauseBtn.addEventListener('click', pauseGame);
       resetBtn.addEventListener('click', resetGame);
-      window.addEventListener('resize', measureLayout);
 
-      // Initialize renderer and game state
-      resetGame();
+      resetState();
       measureLayout();
       requestAnimationFrame(loop);
     })();
