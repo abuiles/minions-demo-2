@@ -64,6 +64,15 @@
       cursor: pointer;
     }
 
+    #player {
+      position: absolute;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: radial-gradient(circle, #7bff7b, #2bb673);
+      box-shadow: 0 0 12px 2px rgba(123, 255, 123, 0.8);
+    }
+
     .hud {
       display: flex;
       justify-content: space-between;
@@ -117,6 +126,7 @@
   </header>
   <main>
     <div id="game-frame">
+      <div id="player" aria-label="player" role="img"></div>
       <div id="target" aria-label="game target" role="button"></div>
     </div>
 
@@ -137,6 +147,7 @@
   <script>
     (function () {
       const frame = document.getElementById('game-frame');
+      const player = document.getElementById('player');
       const target = document.getElementById('target');
       const startBtn = document.getElementById('start');
       const pauseBtn = document.getElementById('pause');
@@ -144,126 +155,203 @@
       const scoreEl = document.getElementById('score');
       const timerEl = document.getElementById('timer');
 
-      const TICK_DURATION_MS = 100;
-      const TICK_DECIMALS = 1;
-      const TICK_INCREMENT = 0.1;
-      const MAX_FRAME_DELTA_MS = 250;
-
       let score = 0;
-      let gameState = 'idle'; // 'idle' | 'running' | 'paused'
+      let running = false;
+      let timer = 0;
+      let intervalId = null;
       let tickCount = 0;
-      let frameAccumulator = 0;
-      let lastFrameTime = 0;
-      let frameId = null;
 
-      function setControls() {
-        startBtn.disabled = gameState === 'running';
-        pauseBtn.disabled = gameState !== 'running';
-        resetBtn.disabled = gameState === 'idle';
-      }
+      const framePadding = 16;
+      const playerSize = 32;
+      const targetSize = 48;
+      const moveStep = 14;
+      const tickDelayMs = 100;
 
-      function stopLoop() {
-        if (frameId === null) return;
-        cancelAnimationFrame(frameId);
-        frameId = null;
-      }
+      let playerX = 0;
+      let playerY = 0;
+      let targetX = 0;
+      let targetY = 0;
 
-      function syncTimer() {
-        const seconds = (tickCount * TICK_INCREMENT).toFixed(TICK_DECIMALS);
-        timerEl.textContent = seconds;
-      }
+      const directionVectors = {
+        up: { x: 0, y: -1 },
+        down: { x: 0, y: 1 },
+        left: { x: -1, y: 0 },
+        right: { x: 1, y: 0 },
+      };
+      const directionFromKey = {
+        ArrowUp: 'up',
+        ArrowDown: 'down',
+        ArrowLeft: 'left',
+        ArrowRight: 'right',
+        w: 'up',
+        W: 'up',
+        s: 'down',
+        S: 'down',
+        a: 'left',
+        A: 'left',
+        d: 'right',
+        D: 'right',
+      };
 
-      function syncScore() {
-        scoreEl.textContent = score;
-      }
+      let direction = directionVectors.right;
+      let queuedDirection = null;
+      let queuedForTick = -1;
 
       function placeTarget() {
         const { width, height } = frame.getBoundingClientRect();
-        const padding = 20;
-        const x = Math.random() * (width - padding * 2) + padding;
-        const y = Math.random() * (height - padding * 2) + padding;
-        target.style.transform = `translate(${x}px, ${y}px)`;
+        const x = Math.random() * (width - targetSize - framePadding * 2) + framePadding;
+        const y = Math.random() * (height - targetSize - framePadding * 2) + framePadding;
+        targetX = x;
+        targetY = y;
+        target.style.transform = `translate(${targetX}px, ${targetY}px)`;
       }
 
-      function hideTarget() {
-        target.style.transform = 'translate(-100px, -100px)';
+      function placePlayer(reset = false) {
+        const { width, height } = frame.getBoundingClientRect();
+
+        if (reset || playerX < 0) {
+          playerX = (width - playerSize) / 2;
+          playerY = (height - playerSize) / 2;
+        } else {
+          const maxX = width - playerSize;
+          const maxY = height - playerSize;
+          playerX = Math.min(Math.max(playerX, 0), maxX);
+          playerY = Math.min(Math.max(playerY, 0), maxY);
+        }
+
+        player.style.transform = `translate(${playerX}px, ${playerY}px)`;
       }
 
-      function updateGameTick() {
+      function updateTimer() {
+        timer += 0.1;
+        timerEl.textContent = timer.toFixed(1);
+      }
+
+      function isReverse(dirA, dirB) {
+        return dirA.x === -dirB.x && dirA.y === -dirB.y;
+      }
+
+      function isSameDirection(dirA, dirB) {
+        return dirA.x === dirB.x && dirA.y === dirB.y;
+      }
+
+      function queueDirection(event) {
+        const nextDirectionName = directionFromKey[event.key];
+        if (!nextDirectionName) return;
+
+        event.preventDefault();
+        const nextDirection = directionVectors[nextDirectionName];
+        const baseDirection = queuedDirection || direction;
+
+        if (
+          tickCount === queuedForTick ||
+          isSameDirection(baseDirection, nextDirection) ||
+          isReverse(baseDirection, nextDirection)
+        ) {
+          return;
+        }
+
+        queuedDirection = nextDirection;
+        queuedForTick = tickCount;
+      }
+
+      function addScore() {
+        score += 10;
+        scoreEl.textContent = score;
+      }
+
+      function checkCollision() {
+        const hit =
+          playerX < targetX + targetSize &&
+          playerX + playerSize > targetX &&
+          playerY < targetY + targetSize &&
+          playerY + playerSize > targetY;
+
+        if (hit) {
+          addScore();
+          placeTarget();
+        }
+      }
+
+      function movePlayer() {
+        if (queuedDirection) {
+          direction = queuedDirection;
+          queuedDirection = null;
+        }
+
+        const { width, height } = frame.getBoundingClientRect();
+        const maxX = width - playerSize;
+        const maxY = height - playerSize;
+
+        playerX = Math.min(Math.max(playerX + direction.x * moveStep, 0), maxX);
+        playerY = Math.min(Math.max(playerY + direction.y * moveStep, 0), maxY);
+        player.style.transform = `translate(${playerX}px, ${playerY}px)`;
+      }
+
+      function runTick() {
+        if (!running) return;
+
         tickCount += 1;
-        syncTimer();
-      }
-
-      function tickLoop(timestamp) {
-        if (gameState !== 'running') return;
-        if (!lastFrameTime) {
-          lastFrameTime = timestamp;
-        }
-
-        const delta = Math.min(timestamp - lastFrameTime, MAX_FRAME_DELTA_MS);
-        lastFrameTime = timestamp;
-        frameAccumulator += delta;
-
-        while (frameAccumulator >= TICK_DURATION_MS) {
-          frameAccumulator -= TICK_DURATION_MS;
-          updateGameTick();
-        }
-
-        frameId = requestAnimationFrame(tickLoop);
+        movePlayer();
+        checkCollision();
+        updateTimer();
       }
 
       function startGame() {
-        if (gameState === 'running') return;
-        gameState = 'running';
-        setControls();
-        lastFrameTime = 0;
-        frameAccumulator = 0;
-        stopLoop();
-        frameId = requestAnimationFrame(tickLoop);
-
-        if (score === 0 && tickCount === 0) {
-          placeTarget();
-        } else if (target.style.transform === 'translate(-100px, -100px)') {
-          placeTarget();
+        if (running) return;
+        running = true;
+        tickCount += 1;
+        startBtn.disabled = true;
+        pauseBtn.disabled = false;
+        resetBtn.disabled = false;
+        intervalId = setInterval(runTick, tickDelayMs);
+        placeTarget();
+        if (playerX < 0 || playerY < 0) {
+          placePlayer(true);
         }
       }
 
       function pauseGame() {
-        if (gameState !== 'running') return;
-        gameState = 'paused';
-        setControls();
-        lastFrameTime = 0;
-        frameAccumulator = 0;
-        stopLoop();
+        if (!running) return;
+        running = false;
+        startBtn.disabled = false;
+        pauseBtn.disabled = true;
+        clearInterval(intervalId);
       }
 
       function resetGame() {
-        gameState = 'idle';
-        stopLoop();
-        lastFrameTime = 0;
-        frameAccumulator = 0;
-        tickCount = 0;
+        running = false;
+        startBtn.disabled = false;
+        pauseBtn.disabled = true;
+        resetBtn.disabled = true;
+        clearInterval(intervalId);
+        tickCount += 1;
+        timer = 0;
         score = 0;
-        syncScore();
-        syncTimer();
-        setControls();
-        hideTarget();
+        scoreEl.textContent = score;
+        timerEl.textContent = '0.0';
+        direction = directionVectors.right;
+        queuedDirection = null;
+        queuedForTick = -1;
+        playerX = -1;
+        playerY = -1;
+        player.style.transform = 'translate(-100px, -100px)';
+        target.style.transform = 'translate(-100px, -100px)';
       }
 
       target.addEventListener('click', () => {
-        if (gameState !== 'running') return;
-        score += 10;
-        syncScore();
+        if (!running) return;
+        addScore();
         placeTarget();
       });
 
       startBtn.addEventListener('click', startGame);
       pauseBtn.addEventListener('click', pauseGame);
       resetBtn.addEventListener('click', resetGame);
+      window.addEventListener('keydown', queueDirection);
 
       // Ensure target is hidden until game begins
       resetGame();
-      scoreEl.textContent = score;
     })();
   </script>
 </body>
