@@ -50,7 +50,7 @@
       border: 2px solid #6478ff;
       border-radius: 0.75rem;
       padding: 1rem;
-      min-height: 320px;
+      min-height: 360px;
       overflow: hidden;
     }
 
@@ -64,28 +64,77 @@
       cursor: pointer;
     }
 
-    #player {
+    .item {
       position: absolute;
-      width: 32px;
-      height: 32px;
+      width: 36px;
+      height: 36px;
       border-radius: 50%;
-      background: radial-gradient(circle, #7bff7b, #2bb673);
-      box-shadow: 0 0 12px 2px rgba(123, 255, 123, 0.8);
+      border: 2px solid rgba(255, 255, 255, 0.45);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.2rem;
+      cursor: pointer;
+      user-select: none;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.32);
+    }
+
+    .item-banana {
+      background: radial-gradient(circle, #ffe066, #f2b33f);
+    }
+
+    .item-avocado {
+      background: radial-gradient(circle, #8ee48e, #2d9952);
+    }
+
+    .item-explosive {
+      background: radial-gradient(circle, #ff8e8e, #b82c2c);
+      color: #fff8;
+      font-weight: 700;
     }
 
     .hud {
       display: flex;
       justify-content: space-between;
-      font-size: 1.2rem;
+      font-size: 1.1rem;
       color: #fefefe;
       border-bottom: 1px solid rgba(255, 255, 255, 0.15);
       padding-bottom: 0.25rem;
+      gap: 0.75rem;
+      flex-wrap: wrap;
     }
 
     .controls {
       display: flex;
       gap: 0.75rem;
       flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .seed-row {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      min-width: 100%;
+    }
+
+    .seed-row label {
+      font-size: 0.9rem;
+      color: #bdd0ff;
+      white-space: nowrap;
+    }
+
+    .seed-row input {
+      width: 9rem;
+      padding: 0.45rem 0.55rem;
+      border: none;
+      border-radius: 0.4rem;
+    }
+
+    .seed-row .seed-value {
+      color: #c4d8ff;
+      font-size: 0.85rem;
+      white-space: nowrap;
     }
 
     button {
@@ -117,21 +166,35 @@
       color: #7ea7ff;
       font-size: 0.9rem;
     }
+
+    @media (max-width: 520px) {
+      .seed-row {
+        flex-wrap: wrap;
+      }
+
+      .seed-row input {
+        width: 100%;
+      }
+
+      .seed-row button {
+        min-width: unset;
+      }
+    }
   </style>
 </head>
 <body>
   <header>
     <h1>Minions Demo 2</h1>
-    <p>Frontend-only prototype: tap glowing targets and keep the streak alive.</p>
+    <p>Frontend-only prototype: tap targets and collect deterministic items.</p>
   </header>
   <main>
     <div id="game-frame">
-      <div id="player" aria-label="player" role="img"></div>
       <div id="target" aria-label="game target" role="button"></div>
     </div>
 
     <div class="hud">
       <span>Score: <strong id="score">0</strong></span>
+      <span>Items: <strong id="item-count">0</strong></span>
       <span>Time: <strong id="timer">0.0</strong>s</span>
     </div>
 
@@ -140,6 +203,13 @@
       <button id="pause" disabled>Pause</button>
       <button id="reset" disabled>Reset</button>
     </div>
+
+    <div class="seed-row">
+      <label for="seed-input">Deterministic seed:</label>
+      <input id="seed-input" type="text" placeholder="random" />
+      <button id="apply-seed">Apply Seed</button>
+      <span class="seed-value">Active: <strong id="seed-display">n/a</strong></span>
+    </div>
   </main>
   <footer>
     Static shell; deploy to GitHub Pages via <code>index.html</code> at the repository root.
@@ -147,79 +217,295 @@
   <script>
     (function () {
       const frame = document.getElementById('game-frame');
-      const player = document.getElementById('player');
       const target = document.getElementById('target');
       const startBtn = document.getElementById('start');
       const pauseBtn = document.getElementById('pause');
       const resetBtn = document.getElementById('reset');
       const scoreEl = document.getElementById('score');
       const timerEl = document.getElementById('timer');
+      const itemCountEl = document.getElementById('item-count');
+      const seedInput = document.getElementById('seed-input');
+      const seedApplyButton = document.getElementById('apply-seed');
+      const seedDisplay = document.getElementById('seed-display');
+
+      const ITEM_TYPES = {
+        banana: {
+          points: 5,
+          symbol: '🍌',
+          className: 'item-banana',
+        },
+        avocado: {
+          points: 10,
+          symbol: '🥑',
+          className: 'item-avocado',
+        },
+        explosive: {
+          points: 25,
+          symbol: '💥',
+          className: 'item-explosive',
+          radius: 1,
+        },
+      };
+
+      const BOARD_COLUMNS = 8;
+      const BOARD_ROWS = 7;
+      const CELL_PADDING = 14;
+      const TARGET_SIZE = 46;
+      const ITEM_SIZE = 34;
+      const SPAWN_INTERVAL_MS = 900;
+      const MAX_ITEMS = 12;
+      const SPAWN_CHANCE = 0.72;
+
+      const typeChances = [
+        { type: 'banana', chance: 0.6 },
+        { type: 'avocado', chance: 0.35 },
+        { type: 'explosive', chance: 0.05 },
+      ];
 
       let score = 0;
       let running = false;
       let timer = 0;
-      let intervalId = null;
-      let tickCount = 0;
+      let tickId = null;
+      let spawnId = null;
+      let resizeTimer = null;
+      let rngState = 0;
 
-      const framePadding = 16;
-      const playerSize = 32;
-      const targetSize = 48;
-      const moveStep = 14;
-      const tickDelayMs = 100;
+      let targetCell = null;
+      const itemsByCell = new Map();
 
-      let playerX = 0;
-      let playerY = 0;
-      let targetX = 0;
-      let targetY = 0;
-
-      const directionVectors = {
-        up: { x: 0, y: -1 },
-        down: { x: 0, y: 1 },
-        left: { x: -1, y: 0 },
-        right: { x: 1, y: 0 },
-      };
-      const directionFromKey = {
-        ArrowUp: 'up',
-        ArrowDown: 'down',
-        ArrowLeft: 'left',
-        ArrowRight: 'right',
-        w: 'up',
-        W: 'up',
-        s: 'down',
-        S: 'down',
-        a: 'left',
-        A: 'left',
-        d: 'right',
-        D: 'right',
-      };
-
-      let direction = directionVectors.right;
-      let queuedDirection = null;
-      let queuedForTick = -1;
-
-      function placeTarget() {
-        const { width, height } = frame.getBoundingClientRect();
-        const x = Math.random() * (width - targetSize - framePadding * 2) + framePadding;
-        const y = Math.random() * (height - targetSize - framePadding * 2) + framePadding;
-        targetX = x;
-        targetY = y;
-        target.style.transform = `translate(${targetX}px, ${targetY}px)`;
-      }
-
-      function placePlayer(reset = false) {
-        const { width, height } = frame.getBoundingClientRect();
-
-        if (reset || playerX < 0) {
-          playerX = (width - playerSize) / 2;
-          playerY = (height - playerSize) / 2;
-        } else {
-          const maxX = width - playerSize;
-          const maxY = height - playerSize;
-          playerX = Math.min(Math.max(playerX, 0), maxX);
-          playerY = Math.min(Math.max(playerY, 0), maxY);
+      function normalizeSeed(value) {
+        const text = String(value).trim();
+        const asNumber = Number.parseInt(text, 10);
+        if (!Number.isNaN(asNumber) && Number.isFinite(asNumber)) {
+          return asNumber >>> 0;
         }
 
-        player.style.transform = `translate(${playerX}px, ${playerY}px)`;
+        let hash = 2166136261;
+        for (let i = 0; i < text.length; i += 1) {
+          hash ^= text.charCodeAt(i);
+          hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+      }
+
+      function hashSeedFromUrl() {
+        const query = new URLSearchParams(window.location.search);
+        const urlSeed = query.get('seed');
+        if (urlSeed == null || urlSeed.trim().length === 0) {
+          return '';
+        }
+        return urlSeed;
+      }
+
+      function makeRng(seedValue) {
+        let state = normalizeSeed(seedValue);
+        if (state === 0) {
+          state = 0x9E3779B9;
+        }
+
+        return {
+          next() {
+            state = (Math.imul(1664525, state) + 1013904223) >>> 0;
+            return state / 4294967296;
+          },
+          getState() {
+            return state;
+          },
+        };
+      }
+
+      let rng = null;
+
+      function currentRng() {
+        return rng.next();
+      }
+
+      function setSeed(seedText) {
+        rng = makeRng(seedText);
+        seedDisplay.textContent = rng.getState();
+      }
+
+      function keyOf(cell) {
+        return `${cell.col},${cell.row}`;
+      }
+
+      function parseKey(key) {
+        const [col, row] = key.split(',').map((value) => Number.parseInt(value, 10));
+        return { col, row };
+      }
+
+      function isCellOccupied(cell) {
+        const key = keyOf(cell);
+        if (targetCell && keyOf(targetCell) === key) {
+          return true;
+        }
+        return itemsByCell.has(key);
+      }
+
+      function isEmptyCell(cell) {
+        return !isCellOccupied(cell);
+      }
+
+      function getEmptyCells() {
+        const empties = [];
+        for (let row = 0; row < BOARD_ROWS; row += 1) {
+          for (let col = 0; col < BOARD_COLUMNS; col += 1) {
+            const cell = { col, row };
+            if (isEmptyCell(cell)) {
+              empties.push(cell);
+            }
+          }
+        }
+        return empties;
+      }
+
+      function randomEmptyCell() {
+        const empties = getEmptyCells();
+        if (empties.length === 0) {
+          return null;
+        }
+        const index = Math.floor(currentRng() * empties.length);
+        return empties[index];
+      }
+
+      function pickType() {
+        const roll = currentRng();
+        let cumulative = 0;
+        for (let i = 0; i < typeChances.length; i += 1) {
+          const entry = typeChances[i];
+          cumulative += entry.chance;
+          if (roll < cumulative) {
+            return entry.type;
+          }
+        }
+        return 'banana';
+      }
+
+      function cellGeometry() {
+        const bounds = frame.getBoundingClientRect();
+        const width = Math.max(0, bounds.width - CELL_PADDING * 2);
+        const height = Math.max(0, bounds.height - CELL_PADDING * 2);
+
+        const colSize = width / BOARD_COLUMNS;
+        const rowSize = height / BOARD_ROWS;
+
+        return { colSize, rowSize, width, height };
+      }
+
+      function placeElementAtCell(element, cell, size) {
+        const { colSize, rowSize } = cellGeometry();
+        const left = CELL_PADDING + cell.col * colSize + (colSize - size) / 2;
+        const top = CELL_PADDING + cell.row * rowSize + (rowSize - size) / 2;
+
+        element.style.left = `${left}px`;
+        element.style.top = `${top}px`;
+      }
+
+      function placeTarget(cell = null) {
+        if (cell === null) {
+          cell = randomEmptyCell();
+        }
+        if (cell === null) {
+          return;
+        }
+        targetCell = cell;
+        target.dataset.cell = keyOf(cell);
+        target.dataset.col = String(cell.col);
+        target.dataset.row = String(cell.row);
+        placeElementAtCell(target, cell, TARGET_SIZE);
+      }
+
+      function updateScoreDisplay() {
+        scoreEl.textContent = score;
+        itemCountEl.textContent = itemsByCell.size;
+      }
+
+      function removeItem(key) {
+        const item = itemsByCell.get(key);
+        if (!item) {
+          return false;
+        }
+        item.remove();
+        itemsByCell.delete(key);
+        updateScoreDisplay();
+        return true;
+      }
+
+      function spawnItem() {
+        if (!running) {
+          return;
+        }
+
+        if (itemsByCell.size >= MAX_ITEMS) {
+          return;
+        }
+
+        if (currentRng() >= SPAWN_CHANCE) {
+          return;
+        }
+
+        const cell = randomEmptyCell();
+        if (cell === null) {
+          return;
+        }
+
+        const type = pickType();
+        const config = ITEM_TYPES[type];
+        const element = document.createElement('div');
+        const key = keyOf(cell);
+        element.className = `item ${config.className}`;
+        element.classList.add('item');
+        element.dataset.type = type;
+        element.dataset.cell = key;
+        element.dataset.col = String(cell.col);
+        element.dataset.row = String(cell.row);
+        element.textContent = config.symbol;
+
+        placeElementAtCell(element, cell, ITEM_SIZE);
+        itemsByCell.set(key, element);
+        frame.appendChild(element);
+
+        updateScoreDisplay();
+      }
+
+      function explosionKeys(cell) {
+        const affected = [];
+        const radius = ITEM_TYPES.explosive.radius;
+
+        for (const key of itemsByCell.keys()) {
+          const candidate = parseKey(key);
+          const dCol = Math.abs(candidate.col - cell.col);
+          const dRow = Math.abs(candidate.row - cell.row);
+          if (dCol <= radius && dRow <= radius) {
+            affected.push(key);
+          }
+        }
+
+        return affected;
+      }
+
+      function collectItem(key) {
+        const item = itemsByCell.get(key);
+        if (!item || !running) {
+          return;
+        }
+
+        const type = item.dataset.type;
+        const config = ITEM_TYPES[type];
+        score += config.points;
+
+        if (type === 'explosive') {
+          const cell = parseKey(key);
+          const toRemove = explosionKeys(cell);
+          toRemove.forEach((removeKey) => {
+            removeItem(removeKey);
+          });
+        } else {
+          removeItem(key);
+        }
+
+        updateScoreDisplay();
+        placeTarget();
       }
 
       function updateTimer() {
@@ -227,96 +513,51 @@
         timerEl.textContent = timer.toFixed(1);
       }
 
-      function isReverse(dirA, dirB) {
-        return dirA.x === -dirB.x && dirA.y === -dirB.y;
+      function clearItems() {
+        itemsByCell.forEach((item) => item.remove());
+        itemsByCell.clear();
       }
 
-      function isSameDirection(dirA, dirB) {
-        return dirA.x === dirB.x && dirA.y === dirB.y;
+      function resetTarget() {
+        target.style.left = '-100px';
+        target.style.top = '-100px';
+        target.dataset.cell = '';
+        target.dataset.col = '';
+        target.dataset.row = '';
+        targetCell = null;
       }
 
-      function queueDirection(event) {
-        const nextDirectionName = directionFromKey[event.key];
-        if (!nextDirectionName) return;
-
-        event.preventDefault();
-        const nextDirection = directionVectors[nextDirectionName];
-        const baseDirection = queuedDirection || direction;
-
-        if (
-          tickCount === queuedForTick ||
-          isSameDirection(baseDirection, nextDirection) ||
-          isReverse(baseDirection, nextDirection)
-        ) {
-          return;
+      function repositionAll() {
+        if (targetCell) {
+          placeElementAtCell(target, targetCell, TARGET_SIZE);
         }
-
-        queuedDirection = nextDirection;
-        queuedForTick = tickCount;
-      }
-
-      function addScore() {
-        score += 10;
-        scoreEl.textContent = score;
-      }
-
-      function checkCollision() {
-        const hit =
-          playerX < targetX + targetSize &&
-          playerX + playerSize > targetX &&
-          playerY < targetY + targetSize &&
-          playerY + playerSize > targetY;
-
-        if (hit) {
-          addScore();
-          placeTarget();
-        }
-      }
-
-      function movePlayer() {
-        if (queuedDirection) {
-          direction = queuedDirection;
-          queuedDirection = null;
-        }
-
-        const { width, height } = frame.getBoundingClientRect();
-        const maxX = width - playerSize;
-        const maxY = height - playerSize;
-
-        playerX = Math.min(Math.max(playerX + direction.x * moveStep, 0), maxX);
-        playerY = Math.min(Math.max(playerY + direction.y * moveStep, 0), maxY);
-        player.style.transform = `translate(${playerX}px, ${playerY}px)`;
-      }
-
-      function runTick() {
-        if (!running) return;
-
-        tickCount += 1;
-        movePlayer();
-        checkCollision();
-        updateTimer();
+        itemsByCell.forEach((item, key) => {
+          const cell = parseKey(key);
+          placeElementAtCell(item, cell, ITEM_SIZE);
+        });
       }
 
       function startGame() {
         if (running) return;
         running = true;
-        tickCount += 1;
         startBtn.disabled = true;
         pauseBtn.disabled = false;
         resetBtn.disabled = false;
-        intervalId = setInterval(runTick, tickDelayMs);
-        placeTarget();
-        if (playerX < 0 || playerY < 0) {
-          placePlayer(true);
+
+        tickId = setInterval(updateTimer, 100);
+        spawnId = setInterval(spawnItem, SPAWN_INTERVAL_MS);
+
+        if (!targetCell) {
+          placeTarget();
         }
       }
 
       function pauseGame() {
-        if (!running) return;
         running = false;
         startBtn.disabled = false;
         pauseBtn.disabled = true;
-        clearInterval(intervalId);
+        clearInterval(tickId);
+        clearInterval(spawnId);
       }
 
       function resetGame() {
@@ -324,33 +565,64 @@
         startBtn.disabled = false;
         pauseBtn.disabled = true;
         resetBtn.disabled = true;
-        clearInterval(intervalId);
-        tickCount += 1;
+        clearInterval(tickId);
+        clearInterval(spawnId);
+
         timer = 0;
         score = 0;
-        scoreEl.textContent = score;
+        tickId = null;
+        spawnId = null;
         timerEl.textContent = '0.0';
-        direction = directionVectors.right;
-        queuedDirection = null;
-        queuedForTick = -1;
-        playerX = -1;
-        playerY = -1;
-        player.style.transform = 'translate(-100px, -100px)';
-        target.style.transform = 'translate(-100px, -100px)';
+        updateScoreDisplay();
+        clearItems();
+        resetTarget();
       }
-
-      target.addEventListener('click', () => {
-        if (!running) return;
-        addScore();
-        placeTarget();
-      });
 
       startBtn.addEventListener('click', startGame);
       pauseBtn.addEventListener('click', pauseGame);
       resetBtn.addEventListener('click', resetGame);
-      window.addEventListener('keydown', queueDirection);
 
-      // Ensure target is hidden until game begins
+      target.addEventListener('click', () => {
+        if (!running) return;
+        score += 10;
+        updateScoreDisplay();
+        placeTarget();
+      });
+
+      frame.addEventListener('click', (event) => {
+        const item = event.target.closest('.item');
+        if (!item || !running) return;
+        collectItem(item.dataset.cell);
+      });
+
+      seedApplyButton.addEventListener('click', () => {
+        setSeed(seedInput.value || String(Date.now()));
+      });
+
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          repositionAll();
+        }, 100);
+      });
+
+      setSeed(seedInput.value || hashSeedFromUrl() || String(Date.now()));
+      if (hashSeedFromUrl()) {
+        seedInput.value = hashSeedFromUrl();
+      }
+
+      window.__minionsDemo = {
+        applySeed(seed) {
+          setSeed(seed);
+        },
+        tickSpawn() {
+          spawnItem();
+        },
+        clearAll() {
+          resetGame();
+        },
+      };
+
       resetGame();
     })();
   </script>
